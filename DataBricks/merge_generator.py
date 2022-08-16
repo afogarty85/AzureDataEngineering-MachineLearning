@@ -1,3 +1,6 @@
+# generate complex merge statements quickly with this generator
+
+
 def generate_merge_into(source_cols, changeset, table_name, natural_key, partition_col, partition_vals, extra_join_keys, housekeeping_cols, effective_date, current_version):
     '''
     MERGE INTO GENERATOR
@@ -11,7 +14,7 @@ def generate_merge_into(source_cols, changeset, table_name, natural_key, partiti
     partition_vals: list ; the values for the parititon in the changeset
     extra_join_keys: list ; extra keys to join/match on
     housekeeping_cols: list ; the housekeeping cols
-    current_version: int ; whether we want to specify it
+    current_version: int ; the value we want specified in the merge statement
     '''
 
     num_cols = len(source_cols) - 1

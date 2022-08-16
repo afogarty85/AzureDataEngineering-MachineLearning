@@ -63,9 +63,9 @@ def generate_silver_table(table_name, origin, parquet_location, partition=None, 
 
 
 # params
-table_name = 'StateTransitionCM'  # RAW/History/CHIE/StateTransitionCMNew/2022-07-23/StateTransitionCM_0_1.parquet
+table_name = 'StateTransitionCM'
 origin = 'CHIE'
-parquet_location = "mnt/RAW/History/CHIE/StateTransitionCMNew/2022-07-23/*.parquet"
+parquet_location = "mnt/folder_path/*.parquet"
 partition = 'DataCenterName'
 caps_primary_key = False
 removeCreatedUpdatedDate = True

@@ -57,7 +57,7 @@ def generate_gold_table(df, table_name, origin, partition):
 
 
 # params
-df = spark.read.format('parquet').load('/mnt/TRANSFORMED/Daily/dim.RackLayout_daily.parquet')
+df = spark.read.format('parquet').load('/mnt/folder_path/*.parquet"')
 table_name = 'RackLayout'
 origin = 'OnePDM'
 partition = None
