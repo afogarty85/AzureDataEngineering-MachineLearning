@@ -8,7 +8,8 @@ def to_camel_case(s, user_acronyms):
 
     params::
     s: string
-    user_acronyms: list
+    user_acronyms: list; user-defined acronyms that should be set correctly,
+    e.g., SKU, ID, etc
 
     Sample use:
     to_camel_case('TheQuickBrownFox', None)  # 'theQuickBrownFox'
