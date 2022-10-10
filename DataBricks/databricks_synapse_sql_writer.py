@@ -4,7 +4,7 @@ import re
 import random
 import string
 from pyspark.sql import functions as F
-
+import time
 
 # write files from Spark/Databricks to Azure Synapse SQL
 # Automated workflow which does the following:
@@ -131,20 +131,14 @@ for file in allFiles:
 # get data origins (e.g., OnePDM) and tables
 paths = [s for s in pathing if len(s.split('/')) == 7]
 
-# exclude IcM / BOM / MTx -- separate process for that
-paths = [path for path in paths if 'IcM' not in path]
-paths = [path for path in paths if 'MTx' not in path]
-paths.remove('/dbfs/mnt/out/Gold/CHIE/BillOfMaterial')
-
 # create dicts to help parameterize table loading
 tables = [s.split('/')[-1] for s in paths if len(s.split('/')) == 7]
-
 
 dim_fact_map = dict(zip(tables, tables))
 fact_list = ['ListHere']
 
 # for tables with more than 60m rows, generally speaking
-clustered_columnstore_index_list = ['LargeTablesHere']
+clustered_columnstore_index_list = []
 
 # set dim/fact
 dim_fact_map.update((k, 'dim') for k, v in dim_fact_map.items() if k not in fact_list)
@@ -172,9 +166,24 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
         # load df
         df = spark.read.format("parquet").load(f"/{pathing_}")
 
+        # drop annoying index col if exists
+        df = df.drop('__index_level_0__')
+
         # get lengths
-        df1 = df.select([F.max(F.length(F.col(col))).alias(f"{col}") for col in df.columns]).limit(1).cache()
-        df1 = df1.select([(df1[col] + 5).alias(f"{col}") for col in df1.columns])
+        df1 = df.select([F.max(F.length(F.col(col)) + 5).alias(f"{col}") for col in df.columns])
+
+        # create a dict of the lengths
+        df_col_lengths = df1.toPandas().to_dict('records')[0]
+
+        # update dict to say max if we are over the limit
+        df_col_lengths.update((k, 'max') for k, v in df_col_lengths.items() if v >= 8000)
+
+        # get df count
+        df_count = df.count()
+
+        # clustered columnstore check; if greater than 60m and we dont violate max varchar
+        if (df_count >= 60000000) and ( 'max' not in df_col_lengths.values() ):
+            clustered_columnstore_index_list.append(table)
 
         # build sql table lengths
         cols_ = ''
@@ -182,8 +191,8 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
         for i, (name, type) in enumerate(df.dtypes):
 
             if type == 'string':
-                len_ = df1.select(F.col(f'{name}')).first()[0]
-                if len_ >= 8000: len_ = 'max'
+                # get the length
+                len_ = df_col_lengths.get(name)
 
             if type == 'double':
                 type = 'float'
@@ -278,8 +287,9 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
 
         # load data from the gold out
         pathing_ = '/'.join(paths[table_loc].split('/')[2::])
+
         # load df
-        df = spark.read.format("parquet").load(f"/{pathing_}")
+        df = spark.read.format("parquet").load(f"/{pathing_}").drop('__index_level_0__')
 
         # connect to the sql server
         cnxn = pyodbc.connect(s2, autocommit=True)  # to send alter cmd
@@ -298,7 +308,10 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
         print(f'Now building view: {table}')
         cursor.execute(total_views[table_loc][0])
 
-        # write to SQL
+        # track the time it takes:
+        timestamp1 = time.time()
+
+        # write to MoAD
         print(f"Now injecting table: {table}")
         df.write \
         .mode("append") \
@@ -310,6 +323,10 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
         .option("truncate", "true") \
         .option("tempDir", f"abfss://servername{step_}lakefs@servername{step_}lake.dfs.core.windows.net/temp") \
         .save()
+
+        timestamp2 = time.time()
+        time_Delta = (timestamp2 - timestamp1) / 60
+        print("This took %.2f minutes" % time_Delta, '\n' )
 
     except Exception as e:
         print(e)

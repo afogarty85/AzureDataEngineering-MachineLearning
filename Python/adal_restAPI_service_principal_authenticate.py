@@ -1,4 +1,5 @@
 import adal
+import requests
 
 # params to connect
 tenant = 'tenant_vals'
