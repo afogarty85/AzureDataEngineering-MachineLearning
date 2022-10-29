@@ -67,6 +67,26 @@ async with ClientSecretCredential(TENANT, CLIENTID, CLIENTSECRET) as credential:
                 await blob_data.readinto(writtenbytes)
                 # zipfile
                 f = ZipFile(writtenbytes)
-                #print(f.namelist()); 'srv_info.csv'
+                #print(f.namelist());
                 with f.open([s for s in f.namelist() if 'srv_info.csv' in s][0], 'r') as g:
                     df = pd.read_csv(g)
+
+
+# download file given URI v2
+async with ClientSecretCredential(TENANT, CLIENTID, CLIENTSECRET) as credential:
+    async with BlobServiceClient(account_url=f"{blob_endpoint}", credential=credential) as blob_service_client:
+        async with blob_service_client.get_container_client(f'{container}') as blob_container_client:
+            # open bytes
+            writtenbytes = io.BytesIO()
+            # write file to it
+            await download_blob_from_url(blob_URI, credential=credential, output=writtenbytes)
+            # zipfile
+            f = ZipFile(writtenbytes)
+            # for the file of interest
+            with f.open([s for s in f.namelist() if 'filename.log' in s][0], 'r') as g:
+                _log = g.read().decode("utf-8")
+                trace_out = do_stuff(_log)
+
+            with f.open([s for s in f.namelist() if 'filename2.log' in s][0], 'r') as g:
+                _log2 = g.read().decode("utf-8")
+                trace_out2 = do_stuff2(_log2)
