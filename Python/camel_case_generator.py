@@ -1,4 +1,7 @@
 import re
+import itertools
+
+
 def to_camel_case(s, user_acronyms):
     '''
     Camel Case Generator;
@@ -18,11 +21,6 @@ def to_camel_case(s, user_acronyms):
 
     '''
 
-    # apply user-specified acrnonym fixes
-    if user_acronyms is not None:
-        for acronym in user_acronyms:
-            s = re.sub(acronym, acronym, s, flags=re.IGNORECASE)
-
     # handle snake_case
     if '_' in s:
         # split on snake
@@ -38,6 +36,13 @@ def to_camel_case(s, user_acronyms):
     # if we cant do anything; return
     if (all(s.lower()) == s) or (all(s.upper()) == s):
         return s
+
+    # apply user-specified acrnonym fixes
+    if user_acronyms is not None:
+        for acronym in user_acronyms:
+            chars = list(map(''.join, itertools.product(*zip(acronym.upper(), acronym.lower()))))
+            chars = '|'.join(chars)
+            s = re.sub(pattern=fr"({chars})(?=[A-Z]|.\b|\b)", repl=acronym, string=s)
 
     # container
     word_holder = {}
@@ -69,6 +74,9 @@ def to_camel_case(s, user_acronyms):
     # find starting text positions
     starting_positions = [(m.start(0), m.end(0)) for m in re.finditer(r'\b[a-z][a-z]+', s)]
 
+    # find last pos
+    last_pos = len(s)
+
     # store positions and text
     for a_pos, a_word in zip(acronym_positions, acronyms):
         word_holder[a_pos] = a_word
@@ -76,7 +84,7 @@ def to_camel_case(s, user_acronyms):
     # store positions and text
     for p_pos, p_word in zip(pascal_positions, pascal_chars):
         # if the starting word is pascal; lower it
-        if 0 in p_pos:
+        if 0 in p_pos and last_pos not in p_pos:
             p_word = p_word.lower()
             word_holder[p_pos] = p_word
         else:
@@ -109,6 +117,7 @@ case6 = 'THISISATESTAndThisISATEstB'
 case7 = 'thisIsATEstimatedT'
 case8 = 'The_Quick_Brown_Fox'
 case9 = 'the_quick_brown_fox'
+case10 = 'Generation'
 
 assert to_camel_case(case1, None) == 'thisIsATest', 'failed'
 assert to_camel_case(case2, None) == 'thisIsATest', 'failed'
@@ -119,6 +128,7 @@ assert to_camel_case(case6, None) == 'THISISATESTAndThisISATEstB', 'failed'
 assert to_camel_case(case7, None) == 'thisIsATEstimatedT', 'failed'
 assert to_camel_case(case8, None) == 'theQuickBrownFox', 'failed'
 assert to_camel_case(case9, None) == 'theQuickBrownFox', 'failed'
+assert to_camel_case(case10, None) == 'Generation', 'failed'
 
 s1 = 'AssetRUHeight'
 s2 = 'AssetUCnt'
