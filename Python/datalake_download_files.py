@@ -81,7 +81,7 @@ async def find_files_by_path(path):
     return pathing
 
 
-async def retrieve_adls_file_as_bytes(file_path, semaphore):
+async def retrieve_adls_file_as_bytes(file_path, semaphore, session):
     '''
     Connects to ADLSGen2 and retrieves any file of choice as bytes
     '''
