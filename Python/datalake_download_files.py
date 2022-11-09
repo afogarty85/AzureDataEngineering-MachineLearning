@@ -1,8 +1,12 @@
 from azure.storage.filedatalake.aio import DataLakeServiceClient
 from azure.identity.aio import ClientSecretCredential
-import datetime
 import asyncio
 import nest_asyncio
+from loguru import logger
+import pandas as pd
+from io import BytesIO
+import aiohttp
+nest_asyncio.apply()
 
 
 # params
@@ -14,22 +18,6 @@ file_system = 'adlslakeFS'
 # The file of interest
 file_path = 'RAW/StorageFolder1/my_file.parquet'
 
-'''
-Connects to ADLSGen2 and retrieves any file of choice as bytes
-'''
-# get access to AAD
-async with ClientSecretCredential(tenant, client_id, client_secret) as credential:
-    # get access to ADLS
-    async with DataLakeServiceClient(account_url=f"{adls_account_url}", credential=credential) as datalake_service_client:
-        # get access to FS
-        async with datalake_service_client.get_file_system_client(f"{file_system}") as file_system_client:
-            file_client = file_system_client.get_file_client(f"/{file_path}")
-            self.logger.info(f"Generating data ADLS from file path: {file_path}")
-            # pull and download file asynchronously
-            download = await file_client.download_file(max_concurrency=75)
-            downloaded_bytes = await download.readall()
-            # report progress
-            self.logger.info(f"Finished downloading bytes of length: {len(downloaded_bytes)}")
 
 # download many files, as an example; all parquet files in a folder
 # and turn them into a pandas dataframe
@@ -43,9 +31,9 @@ async def concat_parquet_adls_files(self, file_path, columns):
     # get access to AAD
     async with ClientSecretCredential(self.args.TENANT, self.args.CLIENTID, self.args.CLIENTSECRET) as credential:
         # get access to ADLS
-        async with DataLakeServiceClient(account_url=f"https://moad{self.args.step}lake.dfs.core.windows.net", credential=credential) as datalake_service_client:
+        async with DataLakeServiceClient(account_url=f"https://lakelocation.dfs.core.windows.net", credential=credential) as datalake_service_client:
             # get access to FS
-            async with datalake_service_client.get_file_system_client(f"moad{self.args.step}lakefs") as file_system_client:
+            async with datalake_service_client.get_file_system_client(f"lakefs") as file_system_client:
                 paths = file_system_client.get_paths(f"/{file_path}")
                 byte_storage = []
                 path_storage = []
@@ -76,3 +64,61 @@ def execute_concat_parquet_adls_files(self, file_path, columns):
     loop = asyncio.get_event_loop()
     df = loop.run_until_complete(self.concat_parquet_adls_files(file_path, columns))
     return df
+
+
+# download large numbers of files asynchronously
+async def find_files_by_path(path):
+    ''' async call for looking for file paths, given RAW base '''
+    pathing = []
+    async with ClientSecretCredential(tenant, client_id, client_secret) as credential:
+        # get access to ADLS
+        async with DataLakeServiceClient(account_url=f"https://lakelocation.dfs.core.windows.net", credential=credential) as datalake_service_client:
+            # get access to FS
+            async with datalake_service_client.get_file_system_client(f"lakefs") as file_system_client:
+                paths = file_system_client.get_paths(path=f"/{path}")
+                async for path in paths:
+                    pathing.append(path.name)
+    return pathing
+
+
+async def retrieve_adls_file_as_bytes(file_path, semaphore):
+    '''
+    Connects to ADLSGen2 and retrieves any file of choice as bytes
+    '''
+    # get access to AAD
+    bytes_container = []
+    async with ClientSecretCredential(tenant, client_id, client_secret) as credential:
+        # get access to ADLS
+        async with DataLakeServiceClient(account_url=f"https://lakelocation.dfs.core.windows.net", credential=credential) as datalake_service_client:
+            # get access to FS
+            async with datalake_service_client.get_file_system_client(f"lakefs") as file_system_client:
+                async with semaphore:
+                    async with session:
+                        file_client = file_system_client.get_file_client(f"/{file_path}")
+                        logger.info(f"Generating data ADLS from file path: {file_path}")
+                        # pull and download file
+                        download = await file_client.download_file(max_concurrency=75)
+                        downloaded_bytes = await download.readall()
+                        # report progress
+                        logger.info(f"Finished downloading bytes of length: {len(downloaded_bytes)}")
+                        bytes_container.append(downloaded_bytes)
+                        if semaphore.locked():
+                            await asyncio.sleep(15)
+    return bytes_container
+
+
+async def async_doc_main(paths, semaphore):
+    '''
+    main caller
+    '''
+    s = asyncio.Semaphore(value=semaphore)
+    async with aiohttp.ClientSession() as session:
+        return await asyncio.gather(*[retrieve_adls_file_as_bytes(file_path=path, semaphore=s, session=session) for path in paths])
+
+# get file paths in this folder in our lake
+loop = asyncio.get_event_loop()
+file_paths = loop.run_until_complete(find_files_by_path(path='RAW/Folder/SubFolder'))
+
+# for each file found, retrieve the file as bytes
+loop = asyncio.get_event_loop()
+bytes_container = loop.run_until_complete(async_doc_main(paths=file_paths, semaphore=25))
