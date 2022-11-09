@@ -81,7 +81,7 @@ async def find_files_by_path(path):
     return pathing
 
 
-async def retrieve_adls_file_as_bytes(file_path, semaphore, session):
+async def retrieve_adls_file_as_bytes(file_path, semaphore):
     '''
     Connects to ADLSGen2 and retrieves any file of choice as bytes
     '''
@@ -93,17 +93,16 @@ async def retrieve_adls_file_as_bytes(file_path, semaphore, session):
             # get access to FS
             async with datalake_service_client.get_file_system_client(f"lakefs") as file_system_client:
                 async with semaphore:
-                    async with session:
-                        file_client = file_system_client.get_file_client(f"/{file_path}")
-                        logger.info(f"Generating data ADLS from file path: {file_path}")
-                        # pull and download file
-                        download = await file_client.download_file(max_concurrency=75)
-                        downloaded_bytes = await download.readall()
-                        # report progress
-                        logger.info(f"Finished downloading bytes of length: {len(downloaded_bytes)}")
-                        bytes_container.append(downloaded_bytes)
-                        if semaphore.locked():
-                            await asyncio.sleep(15)
+                    file_client = file_system_client.get_file_client(f"/{file_path}")
+                    logger.info(f"Generating data ADLS from file path: {file_path}")
+                    # pull and download file
+                    download = await file_client.download_file(max_concurrency=75)
+                    downloaded_bytes = await download.readall()
+                    # report progress
+                    logger.info(f"Finished downloading bytes of length: {len(downloaded_bytes)}")
+                    bytes_container.append(downloaded_bytes)
+                    if semaphore.locked():
+                        await asyncio.sleep(15)
     return bytes_container
 
 
@@ -112,8 +111,7 @@ async def async_doc_main(paths, semaphore):
     main caller
     '''
     s = asyncio.Semaphore(value=semaphore)
-    async with aiohttp.ClientSession() as session:
-        return await asyncio.gather(*[retrieve_adls_file_as_bytes(file_path=path, semaphore=s, session=session) for path in paths])
+    return await asyncio.gather(*[retrieve_adls_file_as_bytes(file_path=path, semaphore=s) for path in paths])
 
 # get file paths in this folder in our lake
 loop = asyncio.get_event_loop()
