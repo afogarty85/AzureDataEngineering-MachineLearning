@@ -5,6 +5,11 @@ import os
 import io
 from zipfile import ZipFile
 import pandas as pd
+import json
+from loguru import logger
+import asyncio
+import nest_asyncio
+nest_asyncio.apply()  # important!
 
 # service principal data
 TENANT = ''
@@ -90,3 +95,76 @@ async with ClientSecretCredential(TENANT, CLIENTID, CLIENTSECRET) as credential:
             with f.open([s for s in f.namelist() if 'filename2.log' in s][0], 'r') as g:
                 _log2 = g.read().decode("utf-8")
                 trace_out2 = do_stuff2(_log2)
+
+
+
+
+# async process zip files
+class Zip_File_Processor():
+    '''
+    Reformed processor to handle within-zip file extraction and processing
+    '''
+    def __init__(self, args):
+        self.args = args
+
+    async def async_zip_file_extractor(self, blobFileName, blobEndPoint, semaphore):
+        # storage container
+        storage_ = pd.DataFrame()
+
+        try:
+            # access blob
+            async with ClientSecretCredential(self.args.TENANT, self.args.CLIENTID, self.args.CLIENTSECRET) as credential:
+                async with BlobServiceClient(account_url="https://mdaasincomingprod.blob.core.windows.net/", credential=credential) as blob_service_client:
+                    async with blob_service_client.get_container_client(blobEndPoint) as blob_container_client:
+                        async with semaphore:
+                            logger.info(f'Starting: {blobFileName}, {blobEndPoint}')
+                            # open bytes
+                            writtenbytes = io.BytesIO()
+                            # write file to it
+                            await download_blob_from_url(f'https://url.blob.core.windows.net/{blobEndPoint}/{blobFileName}', credential=credential, output=writtenbytes)
+                            # zipfile
+                            f = ZipFile(writtenbytes)
+
+                            with f.open([s for s in f.namelist() if 'CsiDiag/CSI_DER.json' in s][0], 'r') as g:
+                                # decode binary
+                                _log = json.load(g)
+                                # process
+                                outfile = await self.process_csi_der_json(_log)
+                                # add fileName
+                                outfile['blobFileName'] = blobFileName
+                                # store
+                                storage_ = pd.concat([storage_, outfile], axis=0)
+
+                            if semaphore.locked():
+                                await asyncio.sleep(1)
+
+                            logger.info(f'Completed: {blobFileName}')
+
+        except Exception as e:
+            logger.error(f'Exception: {e}')
+
+        return storage_
+
+
+    async def async_file_as_bytes_generator(self, blobFileName, blobEndPoint, semaphore):
+        '''
+        main caller
+        '''
+        semaphore = asyncio.Semaphore(value=semaphore)
+        return await asyncio.gather(*[self.async_zip_file_extractor(fn, ep, semaphore) for fn, ep in zip(blobFileName, blobEndPoint)])
+
+
+    async def process_csi_der_json(self, log_):
+        '''
+        Do Stuff
+        '''
+        # recieve data
+        pass
+
+        return log_
+
+
+# sample usage:
+zip_proc = Zip_File_Processor(args=args)
+loop = asyncio.get_event_loop()
+log_ = loop.run_until_complete(zip_proc.async_file_as_bytes_generator(blobFileName=blobFileNameList, blobEndPoint=blobEndPointList, semaphore=25))
