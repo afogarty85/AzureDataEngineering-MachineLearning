@@ -4,12 +4,12 @@ import asyncio
 import requests
 import numpy as np
 import nest_asyncio
-import json
 from tenacity import wait_exponential, retry, stop_after_attempt
 nest_asyncio.apply()
 
 
-class generate_ado_batch():
+
+class ado_generator_by_batch():
     '''
     Generate Full ADO Work Items via Batch Processing
 
@@ -19,129 +19,134 @@ class generate_ado_batch():
     Sample Use
 
     # load processor
-    batch_processor = generate_ado_batch(headers, url, payload, config)
+    processor = generate_ado_batch(headers, url, payload, config)
+
     # get all work ids
-    work_id_groups = batch_processor.find_workids()
-    # start loop
-    out = batch_processor.generate_ado_data_by_batch(work_groups=work_id_groups)
+    raw = processor.execute_ado_operations()
+
     '''
     def __init__(self, config, logger, args):
         self.config = config
         self.headers = config.headers
         self.url = config.url
-        self.payload = config.wiql
+        self.logger = logger
 
-    @retry(wait=wait_exponential(multiplier=2, min=15, max=45),
-           stop=stop_after_attempt(10))
-    def retry_workitems(self, wiql_payload):
-        try:
-            response = requests.post(url=self.url + '_apis/wit/wiql?api-version=6.0',
-                                     json=wiql_payload,
-                                     headers=self.headers)
-
-        except Exception as excep:
-            print(f"Exception: {excep}")
-        return response
-
-    def find_workids(self):
-        # institute 3 week window searches
-        delta_time = 21
-        base_time = 0
-        # create empty storage df
-        storage_df = pd.DataFrame()
-        # search this total range of days
-        total_search = (pd.Timestamp("today") - pd.Timestamp('2018-01-01')).days
-
-        while delta_time <= total_search:
-            # report findings
-            print(f'now searching delta time: {delta_time}')
-
-            # create time windows
-            base_date = str(pd.Timestamp('today', tz='US/Pacific') - pd.Timedelta(base_time, unit='D'))[:10]
-            delta_date = str(pd.Timestamp('today', tz='US/Pacific') - pd.Timedelta(delta_time, unit='D'))[:10]
-
-            # search in slices by getting all IDs
-            query = f"""
-            SELECT
-                [System.Id]
-            FROM workitems
-            WHERE [System.TeamProject] = @project
-            AND [System.CreatedDate] < '{base_date}'
-            AND [System.CreatedDate] >= '{delta_date}'
-            """
-
-            # turn query into a wiql payload
-            payload_wiql = {}
-            payload_wiql['query'] = query
-
-            # update search time
-            delta_time += 21
-            base_time += 21
-
-            # send API request with failure retry
-            response = self.retry_workitems(payload_wiql)
-
-            # if no response, go again
-            if not response.ok:
-                continue
-            try:
-                # otherwise extra work items and save them to storage
-                out1 = pd.json_normalize(response.json()['workItems'])[['id']]
-                storage_df = pd.concat([storage_df, out1], axis=0)
-            except Exception as e:
-                print(f'Exception found: {e}')
-
-        # return work ID results
-        work_ids = storage_df['id'].values
-        # split into chunks for further searching
-        work_groups = np.array_split(work_ids, 50, axis=0)
-        return work_groups
-
-    # new async
-    async def send_request(self, workItem, semaphore, session):
-        '''
+    async def async_send_request(self, url, req, headers, type, session, semaphore):
+        """
         Leverage semaphore to regulate the amount of requests being made
-        '''
-        container = []
-        async with semaphore:
-            url = self.url + f'_apis/wit/workItems/{workItem}/revisions?api-version=6.0'
-            async with session.get(url, headers=self.headers) as resp:
-                wItem = await resp.read()
-                wItem = json.loads(wItem)
-                wItem = pd.json_normalize(wItem['value'])
-                wItem.columns = wItem.columns.str.replace('fields.', '', regex=False)
-                container.append(wItem)
-        return container
+        We only want revisions as a field of interest
+        """
+        if type == 'get':
+            async with semaphore:
+                if semaphore.locked():
+                    await asyncio.sleep(1)
+                async with session.get(url=req, headers=self.headers) as resp:
+                    return await resp.json()
 
-    # main async call
-    async def async_main(self, workItems):
-        '''
+        if type == 'post':
+            async with semaphore:
+                if semaphore.locked():
+                    await asyncio.sleep(1)
+                async with session.post(url=self.url + "_apis/wit/wiql?api-version=6.0", headers=self.headers, json={"query": req}) as resp:
+                    return await resp.json()
+
+    @retry(wait=wait_exponential(multiplier=2, min=15, max=45), stop=stop_after_attempt(10))
+    async def async_main_request(self, url, semaphore, req_list, headers, type):
+        """
         main caller
-        '''
-        s = asyncio.Semaphore(value=75)
+        """
+        s = asyncio.Semaphore(value=semaphore)
         async with aiohttp.ClientSession() as session:
-            return await asyncio.gather(*[self.send_request(workItem, semaphore=s, session=session) for workItem in workItems])
+            return await asyncio.gather(*[self.async_send_request(url=self.url, req=req, headers=self.headers, type=type, session=session, semaphore=s) for req in req_list])
 
-    @retry(wait=wait_exponential(multiplier=2, min=15, max=45),
-           stop=stop_after_attempt(10))
-    def retry_data(self, subset):
-        try:
+    def execute_ado_operations(self):
+        '''
+        (1): get work ids
+        (2): get work items
+        (3): get work items with excessive revisions
+        (4): join (2) and (3)
+        (5): clean up
+        '''
+
+        # time travel to 2017 feb
+        url_post_list = [f"Select [System.Id] From WorkItems where [System.TeamProject] = @project AND [System.CreatedDate] <= @today-{i} AND [System.CreatedDate] >= @today-{21+i}" for i in range(0, 1900, 22)]
+
+        # get work ids
+        loop = asyncio.get_event_loop()
+        out = loop.run_until_complete(self.async_main_request(url=self.url, semaphore=1000, req_list=url_post_list, headers=self.headers, type='post'))
+        workitem_set = pd.concat([pd.json_normalize(_['workItems']) for _ in out]).reset_index(drop=True)['id'].values
+
+        # get work item history
+        url_list = [self.url + f'_apis/wit/workitems/{id}/revisions?$expand=all&$skip=0&api-version=6.0' for id in workitem_set]
+        # but batch it
+        url_list = np.array_split(url_list, 50, axis=0)
+        batch_set = []
+
+        # for each batch,
+        for i, batch in enumerate(url_list):
+            self.logger.info(f'now on batch {i}')
             loop = asyncio.get_event_loop()
-            container_ = loop.run_until_complete(self.async_main(workItems=subset))
-            out = pd.concat(file[0] for file in container_)
-        except Exception as excep:
-            print(f"Exception: {excep}")
-        return out
+            out = loop.run_until_complete(self.async_main_request(url=self.url, semaphore=64, req_list=batch, headers=self.headers, type='get'))
+            batch_set.append(out)
 
-    def generate_ado_data_by_batch(self, work_groups):
-        total_results = []
-        for i, subset in enumerate(work_groups):
-            print(f"now on subset: {i}")
-            out = self.retry_data(subset)
-            total_results.append(out)
+        # combine batch_set
+        batch_set = list(sum(batch_set, []))
 
-        # process and organize data
-        raw = pd.concat(file for file in total_results)
-        # truncate to just get the cols we want
-        raw = raw[self.config.cols]
-        return raw
+        self.logger.info('Generating work ids and those that need revs...')
+        # get # of revs from each work id
+        total_revs = pd.concat([pd.json_normalize(_)['count'] for _ in batch_set])
+        retry_list = [200 if i == 200 else 0 for i in total_revs.values]
+
+        self.logger.info('Unpacking work items...')
+        # unpack the work ids
+        workItems = pd.concat([pd.json_normalize(_['value']) for _ in batch_set])
+
+        # send new requests for those that broke 200 revs
+        indices_of_interest = [i for i, j in enumerate(retry_list) if j != 0]
+        ids_of_interest = [j for i, j in enumerate(workitem_set) if i in indices_of_interest]
+
+        # rebuild new urls
+        self.logger.info(f'Sending these extra revs {len(ids_of_interest)}...')
+        url_retry_list = [self.url + f'_apis/wit/workitems/{id}/revisions?$expand=all&$skip=200&api-version=6.0' for id in ids_of_interest]
+        loop = asyncio.get_event_loop()
+        out = loop.run_until_complete(self.async_main_request(url=self.url, semaphore=64, req_list=url_retry_list, headers=self.headers, type='get'))
+
+        # get extended items
+        workItems_extended = pd.concat([pd.json_normalize(_['value']) for _ in out])
+
+        # concat final results
+        self.logger.info('Concatenating final results...')
+        workItems = pd.concat([workItems_extended, workItems], axis=0)
+
+        # drop duplicates
+        self.logger.info('Cleaning up the dataframe...')
+        workItems = workItems.drop_duplicates(['id', 'rev']).reset_index(drop=True)
+
+        # deal with 'fields' in cols
+        workItems.columns = workItems.columns.str.replace('fields.', '', regex=False)
+
+        # truncate cols
+        if self.config.cols is not None:
+            workItems = workItems[self.config.cols]
+
+        # drop cols
+        try:
+            workItems = workItems.drop(self.config.drop, axis=1)
+        except Exception as e:
+            self.logger.error(f" {e}")
+
+        # find unnecessary cols
+        drop_list = workItems.filter(regex='.descriptor|.id|.imageUrl|.href').columns.tolist()
+
+        # drop them
+        workItems = workItems.drop(drop_list, axis=1)
+
+        # find html cols that are excessively long
+        s_cols = [x for x, d in zip(workItems.columns, workItems.dtypes.apply(lambda x: x.name)) if d == 'object']
+
+        # look for html and edit it out
+        for col in s_cols:
+            if workItems[col].astype(str).str.contains("<span").any():
+                workItems[col] = workItems[col].str.replace('<[^<]+?>', ' ', regex=True)
+
+        return workItems
