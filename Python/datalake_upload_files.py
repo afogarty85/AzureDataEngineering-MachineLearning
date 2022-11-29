@@ -58,44 +58,36 @@ async with ClientSecretCredential(tenant, client_id, client_secret) as credentia
             await file_client.flush_data(len(json_out))
 
 
+
+from azure.storage.filedatalake.aio import DataLakeServiceClient as DataLakeServiceClientS
+from azure.identity.aio import ClientSecretCredential  as ClientSecretCredentialS
 # write dataframe as parquet to ADLSGEN2 datalake
-async def parquet_upload(self, df, file_path):
+def parquet_upload(df, file_path):
     """
-    Write Parquet File to ADLS
+    Upload parquet files to ADLS
 
     Args:
-        file_system: String denoting the filesystem for the ADLSGEN2
+        df: Dataframe
         file_path: The file path, given the file_system to reach the file
-        concurrency: Number of parallel connections to download the file
     """
     parquet_kwargs = {
-        'coerce_timestamps': 'us',
-        'allow_truncated_timestamps': True,
+        "coerce_timestamps": "us",
+        "allow_truncated_timestamps": True,
     }
 
-    # get access to AAD
-    async with ClientSecretCredential(self.args.TENANT, self.args.CLIENTID, self.args.CLIENTSECRET) as credential:
-        # get access to ADLS
-        async with DataLakeServiceClient(account_url=f"https://moad{self.args.step}lake.dfs.core.windows.net", credential=credential) as datalake_service_client:
-            # get access to FS
-            async with datalake_service_client.get_file_system_client(f"moad{self.args.step}lakefs") as file_system_client:
-                # create file client with a path to the exact file
-                file_client = file_system_client.get_file_client(f'{file_path}')
-                # turn to bytes
-                writtenbytes = io.BytesIO()
-                df.to_parquet(writtenbytes, **parquet_kwargs)
-                # upload file
-                await file_client.create_file()
-                self.logger.info('Uploading...')
-                await file_client.append_data(data=writtenbytes.getvalue(), offset=0)
-                self.logger.info('Upload complete')
-                await file_client.flush_data(writtenbytes.tell())
-
-
-def execute_parquet_upload(self, df, file_path):
-    '''
-    Executes ADLSGen2 parquet file upload operatins
-    '''
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(self.parquet_upload(df,
-                                                file_path))
+    # get access to AAD -- not using AIO here
+    credential = ClientSecretCredentialS(args.TENANT, args.CLIENTID, args.CLIENTSECRET)
+    # get into lake
+    datalake_service_client = DataLakeServiceClientS(account_url=f"https://mylake.dfs.core.windows.net", credential=credential)
+    # get into fs container
+    file_system_client = datalake_service_client.get_file_system_client(f"mylakefs")
+    # create file client with a path to the exact file
+    file_client = file_system_client.get_file_client(f"{file_path}")
+    # turn to bytes
+    writtenbytes = io.BytesIO()
+    df.to_parquet(writtenbytes, **parquet_kwargs)
+    # upload file
+    file_client.create_file()
+    self.logger.info("Uploading...")
+    file_client.upload_data(writtenbytes.getvalue(), length=len(writtenbytes.getvalue()), timeout=600, overwrite=True)
+    self.logger.info("Upload complete")
