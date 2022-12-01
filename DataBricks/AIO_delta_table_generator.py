@@ -13,7 +13,7 @@ def AIO_delta_table_generator(table_name, origin, file_location, primary_key, co
     removeCreatedUpdatedDate: bool ; if True, we autodrop any reference to CreatedDate and UpdatedDate in source file so we can inject our own ETL cols with the same name
     is_JSON: bool ; if True, we have a JSON file
     '''
-    
+
     # json check
     if is_JSON:
         # use json loader
@@ -26,24 +26,24 @@ def AIO_delta_table_generator(table_name, origin, file_location, primary_key, co
     # if we want to remove created and updated date and use our own,
     if removeCreatedUpdatedDate:
         df = df.drop("CreatedDate").drop("UpdatedDate")
-    
+
     # gen col list
     col_list = [col for col in df.columns]
-                
+
     # add protections if the col names has values in it that parquet does not like
     col_list = [f"`{col}`" if ('.' in col) or ('/' in col) or (' ' in col) else col for col in col_list]
-                
+
     # get dtypes
     dtype_list = [dict(df.dtypes)[col] for col in df.columns]
-    
+
     # blank holding
     tier = None
-                
+
     # gen string
     statement_string = ''
     for col, type in zip(col_list, dtype_list):
         statement_string += f'{col} {type},' + '\n'
-   
+
     # generate modular statements
     def min_table(tier, table_name, statement_string):
         # create statement
@@ -68,31 +68,33 @@ def AIO_delta_table_generator(table_name, origin, file_location, primary_key, co
     def min_silver(tier, origin, table_name, primary_key):
         # create statement
         out = f'''
+                ,
                 {primary_key} bigint GENERATED ALWAYS AS IDENTITY (START WITH 1 INCREMENT BY 1),
                 currentVersion tinyint,
                 effectiveDate int,
                 expirationDate int,
                 createdDate timestamp,
                 updatedDate timestamp
-                '''   
-        
+                '''
+
         return out
 
     # generate silver/gold conditions
     def min_gold(tier, origin, table_name, primary_key):
         # create statement
         out = f'''
+                ,
                 {primary_key} bigint,
                 currentVersion tinyint,
                 effectiveDate int,
                 expirationDate int,
                 createdDate timestamp,
                 updatedDate timestamp
-                '''   
-        
+                '''
+
         return out
-    
-    def col_map():    
+
+    def col_map():
         # create statement
         out = f'''
             TBLPROPERTIES (
@@ -101,8 +103,8 @@ def AIO_delta_table_generator(table_name, origin, file_location, primary_key, co
             'delta.columnMapping.mode' = 'name'
             )
             '''
-        return out    
-    
+        return out
+
     for tier in ['Bronze', 'Silver', 'Gold']:
         print(f'Now generating: d{tier}.{table_name}...')
         # create string holder
@@ -120,7 +122,7 @@ def AIO_delta_table_generator(table_name, origin, file_location, primary_key, co
 
         if tier  == 'Silver':
             table_statement += min_table(tier, table_name, statement_string) + min_silver(tier, origin, table_name, primary_key) + min_loc(tier, origin, table_name)
-            
+
             if columnMapping:
                 table_statement += col_map()
 
@@ -129,10 +131,9 @@ def AIO_delta_table_generator(table_name, origin, file_location, primary_key, co
 
         if tier  == 'Gold':
             table_statement += min_table(tier, table_name, statement_string) + min_gold(tier, origin, table_name, primary_key) + min_loc(tier, origin, table_name)
-            
+
             if columnMapping:
                 table_statement += col_map()
 
             # send statement
                 spark.sql(f'{table_statement}')
-                
