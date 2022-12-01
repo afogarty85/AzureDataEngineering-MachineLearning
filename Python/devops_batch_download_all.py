@@ -76,7 +76,7 @@ class ado_generator_by_batch():
         if self.args.lastrev:
             self.logger.info('Getting work items that have been modified in the last 3 days...')
             # last 3 days
-            url_post_list = [f"Select [System.Id] From WorkItems where [System.TeamProject] = @project AND [System.ChangedDate] <= @today-{i} AND [System.ChangedDate] >= @today-{3}" for i in range(0, 11)]
+            url_post_list = [f"Select [System.Id] From WorkItems where [System.TeamProject] = @project AND [System.ChangedDate] <= @today-{i} AND [System.ChangedDate] >= @today-{i}" for i in range(0, 3)]
         else:
             self.logger.info('Grabbing entire history of work items...')
             # since jan 1 2019; fairly obtuse way to get lots of workids owing to devops arbitray limitations
