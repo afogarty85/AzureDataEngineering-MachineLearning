@@ -143,7 +143,7 @@ class ado_generator_by_batch():
                 out = loop.run_until_complete(self.async_main_request(url=self.url, semaphore=64, req_list=url_list, headers=self.headers, type='get'))
 
                 # get the work items
-                workItems_extended = pd.concat([pd.json_normalize(_['value']) for _ in batch_set])
+                workItems_extended = pd.concat([pd.json_normalize(_['value']) for _ in out])
 
                 # append
                 revision_storage.append(workItems_extended)
