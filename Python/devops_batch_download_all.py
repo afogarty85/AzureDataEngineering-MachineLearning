@@ -42,7 +42,7 @@ class ado_generator_by_batch():
                 if semaphore.locked():
                     await asyncio.sleep(1)
                 async with session.get(url=req, headers=self.headers) as resp:
-                    return await resp.read()
+                    return await resp.json()
 
         if type == 'post':
             async with semaphore:
@@ -88,11 +88,12 @@ class ado_generator_by_batch():
         # get work ids
         loop = asyncio.get_event_loop()
         out = loop.run_until_complete(self.async_main_request(url=self.url, semaphore=64, req_list=url_post_list, headers=self.headers, type='post'))
-        workitem_set = pd.concat([pd.json_normalize(_['workItems']) for _ in out]).reset_index(drop=True)['id'].values
-        self.logger.info(f'Found this many work items: {workitem_set.shape[0]}')
+        workItem_set = pd.concat([pd.json_normalize(_['workItems']) for _ in out])['id'].values
+        self.logger.info(f'Found this many work items: {workItem_set.shape[0]}')
 
-        # get work item history
-        url_list = [self.url + f'_apis/wit/workitems/{id}/revisions?$expand=all&$skip=0&api-version=6.0' for id in workitem_set]
+        # get work item history urls to send
+        url_list = [self.url + f'_apis/wit/workitems/{id}/revisions?$expand=all&$skip=0&api-version=6.0' for id in workItem_set]
+        
         # but batch it
         url_list = np.array_split(url_list, 50, axis=0)
         batch_set = []
@@ -107,34 +108,64 @@ class ado_generator_by_batch():
         # combine batch_set
         batch_set = list(sum(batch_set, []))
 
-        # filter
-        batch_set = [i for i in batch_set if len(i) != 0 and i[:8].decode('utf-8') == '{"count"']
-
-        self.logger.info('Generating work ids and those that need revs...')
-        # get # of revs from each work id
-        total_revs = pd.concat([pd.json_normalize(json.loads(_)) for _ in batch_set])['count']
-        retry_list = [200 if i == 200 else 0 for i in total_revs.values]
-
         self.logger.info('Unpacking work items...')
         # unpack the work ids
-        workItems = pd.concat([pd.json_normalize(json.loads(_)['value']) for _ in batch_set])
+        workItems = pd.concat([pd.json_normalize(_['value']) for _ in batch_set])
 
-        # send new requests for those that broke 200 revs
-        indices_of_interest = [i for i, j in enumerate(retry_list) if j != 0]
-        ids_of_interest = [j for i, j in enumerate(workitem_set) if i in indices_of_interest]
+        self.logger.info('Finding work items that need more revisions...')
+        # get # of revs from each work id
+        revs = pd.concat([pd.json_normalize(_) for _ in batch_set])['count'].values
 
-        # rebuild new urls
-        if len(ids_of_interest) > 0:
-            self.logger.info(f'Sending these extra revs {len(ids_of_interest)}...')
-            url_retry_list = [self.url + f'_apis/wit/workitems/{id}/revisions?$expand=all&$skip=200&api-version=6.0' for id in ids_of_interest]
-            loop = asyncio.get_event_loop()
-            out = loop.run_until_complete(self.async_main_request(url=self.url, semaphore=64, req_list=url_retry_list, headers=self.headers, type='get'))
+        # max rev count scalar
+        max_rev_count = 200
 
-            # get extended items
-            workItems_extended = pd.concat([pd.json_normalize(json.loads(_)['value']) for _ in out])
+        # if true, then we have more searching to do
+        if max_rev_count in revs:
+            self.logger.info('Looking for revisions...')
+            revision_storage = []
+            # set rev count
+            rev_count = 200
+            while max_rev_count in revs:
+                self.logger.info(f'now on rev: {rev_count}')
 
-            # concat final results
-            self.logger.info('Concatenating final results...')
+                # filter ids to those we need
+                retry_list = [200 if i == 200 else 0 for i in revs]
+                indices_of_interest = [i for i, j in enumerate(retry_list) if j != 0]
+                ids_of_interest = [j for i, j in enumerate(workItem_set) if i in indices_of_interest]
+
+                self.logger.info(f'Gettings revs for this many IDs: {len(ids_of_interest)}...')
+
+                # build new get list
+                url_list = [self.url + f'_apis/wit/workitems/{id}/revisions?$expand=all&$skip={rev_count}&api-version=6.0' for id in ids_of_interest]
+
+                # get the first set
+                loop = asyncio.get_event_loop()
+                out = loop.run_until_complete(self.async_main_request(url=self.url, semaphore=64, req_list=url_list, headers=self.headers, type='get'))
+
+                # get the work items
+                workItems_extended = pd.concat([pd.json_normalize(_['value']) for _ in batch_set])
+
+                # append
+                revision_storage.append(workItems_extended)
+
+                # get new set of revs and ids
+                rev_ids = pd.concat([pd.json_normalize(_['value']) for _ in out]).groupby(['id']).size().reset_index(name='count')
+
+                # current set of workitems
+                workItem_set = rev_ids['id'].values
+
+                # current revs
+                revs = rev_ids['count'].values
+
+                # update skip list
+                rev_count += 200
+
+            # concat rev results at the end
+            self.logger.info('Concatenating rev results...')
+            workItems_extended = pd.concat(_ for _ in revision_storage)
+
+            # concat into main workitems
+            self.logger.info('Concatenating revs + total work items...')
             workItems = pd.concat([workItems_extended, workItems], axis=0)
 
         # drop duplicates
