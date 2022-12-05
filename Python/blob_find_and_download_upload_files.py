@@ -168,3 +168,19 @@ class Zip_File_Processor():
 zip_proc = Zip_File_Processor(args=args)
 loop = asyncio.get_event_loop()
 log_ = loop.run_until_complete(zip_proc.async_file_as_bytes_generator(blobFileName=blobFileNameList, blobEndPoint=blobEndPointList, semaphore=25))
+
+
+
+# upload files to blob
+blob_endpoint = 'https://blobname.blob.core.windows.net/'
+container = 'tests'
+
+file_locs = [r"\Daily\dim.filename_daily.parquet"]
+file_names = [s.split('\\')[-1] for s in file_locs]
+
+async with ClientSecretCredential(TENANT, CLIENTID, CLIENTSECRET) as credential:
+    async with BlobServiceClient(account_url=f"{blob_endpoint}", credential=credential) as blob_service_client:
+        async with blob_service_client.get_container_client(f'{container}') as blob_container_client:
+            for file_loc, file_name in zip(file_locs, file_names):
+                with open(file_loc, "rb") as data:
+                    await blob_container_client.upload_blob(name=file_name, data=data)
