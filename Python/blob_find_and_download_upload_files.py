@@ -172,15 +172,38 @@ log_ = loop.run_until_complete(zip_proc.async_file_as_bytes_generator(blobFileNa
 
 
 # upload files to blob
-blob_endpoint = 'https://blobname.blob.core.windows.net/'
+# get access to keyvault with non AIO client
+from azure.identity import ClientSecretCredential as ClientSecretCredentialS
+from azure.keyvault.secrets import SecretClient
+credential = ClientSecretCredentialS(TENANT, CLIENTID, CLIENTSECRET)
+kv_client = SecretClient(vault_url='https://myurl.vault.azure.net/', credential=credential)
+
+# the details of a service principal that has storage blob data contributor access to your blob
+TENANT = kv_client.get_secret("MYTENANT").value
+CLIENTID = kv_client.get_secret("CLIENTID").value
+CLIENTSECRET = kv_client.get_secret("CLIENTSECRET").value
+
+# upload blobs async
+from azure.storage.blob.aio import BlobServiceClient
+from azure.identity.aio import ClientSecretCredential
+
+# blob details
+blob_endpoint = 'https://myblob.blob.core.windows.net/'
 container = 'tests'
 
-file_locs = [r"\Daily\dim.filename_daily.parquet"]
-file_names = [s.split('\\')[-1] for s in file_locs]
+# specify file paths we want to upload to the tests container on myblob account
+file_locs = [r"/mnt/c/Users/afogarty/Desktop/MoAD New/output/TRANSFORMED/Daily/dim.RackLayout_daily.parquet"]
+file_names = [s.split('/')[-1] for s in file_locs]
 
-async with ClientSecretCredential(TENANT, CLIENTID, CLIENTSECRET) as credential:
-    async with BlobServiceClient(account_url=f"{blob_endpoint}", credential=credential) as blob_service_client:
-        async with blob_service_client.get_container_client(f'{container}') as blob_container_client:
-            for file_loc, file_name in zip(file_locs, file_names):
-                with open(file_loc, "rb") as data:
-                    await blob_container_client.upload_blob(name=file_name, data=data)
+# set async
+async def blob_upload(TENANT, CLIENTID, CLIENTSECRET, file_locs, file_names):
+    async with ClientSecretCredential(TENANT, CLIENTID, CLIENTSECRET) as credential:
+        async with BlobServiceClient(account_url=f"{blob_endpoint}", credential=credential) as blob_service_client:
+            async with blob_service_client.get_container_client(f'{container}') as blob_container_client:
+                for file_loc, file_name in zip(file_locs, file_names):
+                    with open(file_loc, "rb") as data:
+                        await blob_container_client.upload_blob(name=file_name, data=data)
+
+# run
+loop = asyncio.get_event_loop()
+layout_paths = loop.run_until_complete(blob_upload(TENANT=TENANT, CLIENTID=CLIENTID, CLIENTSECRET=CLIENTSECRET, file_locs=file_locs, file_names=file_names))
