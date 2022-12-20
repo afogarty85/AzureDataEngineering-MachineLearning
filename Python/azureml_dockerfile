@@ -49,3 +49,23 @@ RUN pip install --trusted-host pypi.org azure-kusto-data
 RUN pip install --trusted-host pypi.org azure-kusto-ingest
 RUN pip install --trusted-host pypi.org lxml
 RUN pip install --trusted-host pypi.org azureml-dataset-runtime
+
+
+
+### not related to the docker file but necessary for AzureML use:
+# create a new runconfig object
+aml_run_config = RunConfiguration()
+
+# enable Docker 
+azureml.core.runconfig.DockerConfiguration(use_docker=True)
+
+# use the aml_compute created above. 
+aml_run_config.target = compute_name
+
+# set docker base image to the default CPU-based image
+aml_run_config.environment.docker.base_image = None
+aml_run_config.environment.docker.base_dockerfile = dockerfile
+
+# Use conda_dependencies.yml to create a conda environment in the Docker image for execution
+aml_run_config.environment.python.user_managed_dependencies = True
+print ("Run configuration created.")
