@@ -1,6 +1,5 @@
 import asyncio
-from azure.storage.blob.aio import (
-    BlobServiceClient,
+from azure.storage.blob.aio import (   BlobServiceClient,
     BlobClient,
     download_blob_from_url,
     ContainerClient,
