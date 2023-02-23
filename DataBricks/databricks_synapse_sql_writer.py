@@ -281,56 +281,103 @@ s2="Driver={ODBC Driver 17 for SQL Server};Server=tcp:%s.sql.azuresynapse.net,14
     SERVER, CLIENTID, CLIENTSECRET)
 
 
-for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
+def inject_table_to_sql(table_loc, table, schema):
+    
+    '''
+    Inject table to SQL
+    
+    params:
+    table_loc: int ; enumerated index to query slices of stored data derived above
+    table: string ; the table name
+    schema: string ; the table schema   
+    '''
+    
+    print(f"Now loading table: {table} with schema: {schema}")
+
+    # load data from the gold out
+    pathing_ = '/'.join(paths[table_loc].split('/')[2::])
+
+    # load df
+    df = spark.read.format("parquet").load(f"/{pathing_}").drop('__index_level_0__')
+
+    # make some custom fixes for now
+    if table in ['ProgramQualification', 'RackCharacteristic', 'RackFeature', 'ResourceDesign', 'CloudNPI']:
+        col_list = [col for col, type in df.dtypes if type == 'float']
+        for col in col_list:
+            df = df.withColumn(col, F.col(col).cast('double'))
+
+    # check for excessively long strings; arbitrary but seems to be a good spot for synapse sql
+    long_string_cols = total_excessive_cols[table_loc]
+
+    # trim
+    if len(long_string_cols) >= 1:
+        print(f'Long string found for table: {schema}.{table}')
+        for col in long_string_cols:
+            df = df.withColumn(col, (F.when(F.length(col) > 400000, F.substring(col, 1, 400000)).otherwise(col)))
+
+    # connect to the sql server
+    cnxn = pyodbc.connect(s2, autocommit=True)  # to send alter cmd
+
+    # open cursor
+    cursor = cnxn.cursor()
+
+    # execute order for generate tables:
+    print(f'Now building table: {table}')
+    cursor.execute(total_tables[table_loc][0])
+
+    # execute order for drop views:
+    print(f'Now dropping view: {table}')
+    cursor.execute(total_view_drops[table_loc][0])
+
+    # execute order for generate views:
+    print(f'Now building view: {table}')
+    cursor.execute(total_views[table_loc][0])
+
+    # track the time it takes:
+    timestamp1 = time.time()
+
+    # write to MoAD
+    print(f"Now injecting table: {table}")
+    df.write \
+    .mode("append") \
+    .format("com.databricks.spark.sqldw") \
+    .option("url", f"jdbc:sqlserver://chiemoad{step_}.sql.azuresynapse.net:1433;database=moad_sql;MARS_Connection=yes;encrypt=true;trustServerCertificate=true;hostNameInCertificate=*.sql.azuresynapse.net;loginTimeout=30") \
+    .option("useAzureMSI", "true") \
+    .option("enableServicePrincipalAuth", "true") \
+    .option("dbTable", f"{schema}.{table}") \
+    .option("truncate", "true") \
+    .option("tempDir", f"abfss://moad{step_}lakefs@moad{step_}lake.dfs.core.windows.net/temp") \
+    .option("maxErrors", 100) \
+    .save()
+
+    timestamp2 = time.time()
+    time_Delta = (timestamp2 - timestamp1) / 60
+    print("This took %.2f minutes" % time_Delta, '\n' )
+
+    # close when done
+    cursor.close()
+    cnxn.close()
+    return
+
+@retry(wait=wait_exponential(multiplier=2, min=15, max=45), stop=stop_after_attempt(2))
+def retry_injection(table_loc, table, schema):
+    '''
+    Separately wrapped fn so we can receive explicit exceptions in event
+    '''
     try:
-        print(f"Now loading table: {table} with schema: {schema}")
-
-        # load data from the gold out
-        pathing_ = '/'.join(paths[table_loc].split('/')[2::])
-
-        # load df
-        df = spark.read.format("parquet").load(f"/{pathing_}").drop('__index_level_0__')
-
-        # connect to the sql server
-        cnxn = pyodbc.connect(s2, autocommit=True)  # to send alter cmd
-        # open cursor
-        cursor = cnxn.cursor()
-
-        # execute order for generate tables:
-        print(f'Now building table: {table}')
-        cursor.execute(total_tables[table_loc][0])
-
-        # execute order for drop views:
-        print(f'Now dropping view: {table}')
-        cursor.execute(total_view_drops[table_loc][0])
-
-        # execute order for generate views:
-        print(f'Now building view: {table}')
-        cursor.execute(total_views[table_loc][0])
-
-        # track the time it takes:
-        timestamp1 = time.time()
-
-        # write to MoAD
-        print(f"Now injecting table: {table}")
-        df.write \
-        .mode("append") \
-        .format("com.databricks.spark.sqldw") \
-        .option("url", f"jdbc:sqlserver://servername{step_}.sql.azuresynapse.net:1433;database=db_name;encrypt=true;trustServerCertificate=true;hostNameInCertificate=*.sql.azuresynapse.net;loginTimeout=30") \
-        .option("useAzureMSI", "true") \
-        .option("enableServicePrincipalAuth", "true") \
-        .option("dbTable", f"{schema}.{table}") \
-        .option("truncate", "true") \
-        .option("tempDir", f"abfss://servername{step_}lakefs@servername{step_}lake.dfs.core.windows.net/temp") \
-        .save()
-
-        timestamp2 = time.time()
-        time_Delta = (timestamp2 - timestamp1) / 60
-        print("This took %.2f minutes" % time_Delta, '\n' )
-
+        inject_table_to_sql(table_loc=table_loc, table=table, schema=schema)
     except Exception as e:
-        print(e)
+        print(f"Found injection failure with table: {table}, retrying... {e}")
 
-# close when done
-cursor.close()
-cnxn.close()
+
+# parallel data loading into sql
+from concurrent.futures import ThreadPoolExecutor
+
+table_loc = range(len(dim_fact_map.items()))
+table = [k for k in dim_fact_map.keys()]
+schema = [v for v in dim_fact_map.values()]
+
+# lets send three tables simultaneously
+parallel_workers = 3
+with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+    executor.map(retry_injection, table_loc, table, schema)
