@@ -151,40 +151,46 @@ tb_map = dict(zip(tables, paths))
 assert len(paths) == len(dim_fact_map), 'Paths do not match dims, stopping'
 
 
-
 total_tables = []
 total_views = []
 total_view_drops = []
+total_excessive_cols = []
 
 for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
     try:
         print(f"Now loading table: {table} with schema: {schema}")
-
+        
         # load data from the gold out
         pathing_ = '/'.join(paths[table_loc].split('/')[2::])
-
+        
         # load df
-        df = spark.read.format("parquet").load(f"/{pathing_}")
-
-        # drop annoying index col if exists
-        df = df.drop('__index_level_0__')
-
-        # get lengths
-        df1 = df.select([F.max(F.length(F.col(col)) + 5).alias(f"{col}") for col in df.columns])
-
+        df = spark.read.format("parquet").load(f"/{pathing_}").drop('__index_level_0__')
+        
+        # get lengths; allow for ADO items
+        cols = [f"`{col}`" if '.' in col else f"{col}" for col in df.columns ]
+        aliases = [col for col in df.columns]
+        df1 = df.select([(F.max(F.length(F.col(col)) + 5)).alias(alias) for col, alias in zip(cols, aliases)])
+        
         # create a dict of the lengths
         df_col_lengths = df1.toPandas().to_dict('records')[0]
-
+        
+        # find very long str cols
+        excessive_cols = list({k for k,v in df_col_lengths.items() if v >= 400000})
+        total_excessive_cols.append(excessive_cols)
+        
         # update dict to say max if we are over the limit
         df_col_lengths.update((k, 'max') for k, v in df_col_lengths.items() if v >= 8000)
 
         # get df count
         df_count = df.count()
-
+        
+        # find timestamps
+        timestamp_cols_ = [name for name, type in df.dtypes if type == 'timestamp']
+        
         # clustered columnstore check; if greater than 60m and we dont violate max varchar
         if (df_count >= 60000000) and ( 'max' not in df_col_lengths.values() ):
             clustered_columnstore_index_list.append(table)
-
+        
         # build sql table lengths
         cols_ = ''
         loop_len = len(df.dtypes) -1
@@ -193,44 +199,44 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
             if type == 'string':
                 # get the length
                 len_ = df_col_lengths.get(name)
-
+                
             if type == 'double':
                 type = 'float'
-
+            
             if type == 'boolean':
                 type = 'bit'
-
+                
             if type == 'timestamp':
                 type = 'DATETIME2 (7)'
 
             if i != loop_len:
                 if (type == 'DATETIME2 (7)'):
                     cols_ += f'[{name}] {type}, \n'
-
+                    
                 elif (type != 'string'):
                     cols_ += f'[{name}] [{type}], \n'
-
+                    
                 else:
                     cols_ += f'[{name}] [varchar] ({len_}), \n'
 
             if i == loop_len:
                 if (type == 'DATETIME2 (7)'):
-                    cols_ += f'[{name}] {type}, \n'
-
+                    cols_ += f'[{name}] {type} \n'
+                    
                 elif type != 'string':
                     cols_ += f'[{name}] [{type}] \n'
-
+                    
                 else:
                     cols_ += f'[{name}] [varchar] ({len_}) \n'
-
-        # build schema
+        
+        # build schema        
         current_table = (f'''IF OBJECT_ID(N'[{schema}].[{table}]') IS NOT NULL DROP TABLE [{schema}].[{table}];
                     CREATE TABLE [{schema}].[{table}]
-                    (
+                    ( 
                         {cols_}
                     )
                     ''')
-
+        
         # small tables get heap; leave off for clustered columnstore index
         if table not in clustered_columnstore_index_list:
             current_table += (f'''
@@ -240,13 +246,13 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
                                 HEAP
                                 )
                                 ''')
-
+           
         # build view drop
         current_view_drop = (f'''IF OBJECT_ID(N'[{schema}].[v{table}]') IS NOT NULL DROP VIEW [{schema}].[v{table}];''')
-
+        
         # view helpers
-        attribute_statement, housekeeping_statement, date_statement, date_join_statement, table_acronym = ViewGenerating(cols=df.columns, table=table).build_view()
-
+        attribute_statement, housekeeping_statement, date_statement, date_join_statement, table_acronym = ViewGenerating(cols=df.columns, table=table, timestamps=timestamp_cols_).build_view()
+        
         # build view gen
         current_view = (f'''
                       CREATE VIEW [{schema}].[v{table}] AS (
@@ -263,14 +269,19 @@ for table_loc, (table, schema) in enumerate(dim_fact_map.items()):
                         {date_join_statement}
                         );
                         ''')
-
+                        
         # accumulate
+        # but check if its a HTML table
+        if table in html_tables:
+            current_table = current_table.replace('[varchar]', '[nvarchar]')
+        
         total_tables.append([current_table])
         total_view_drops.append([current_view_drop])
         total_views.append([current_view])
-
+        
     except Exception as e:
         print(e)
+
 
 # client id / secret
 CLIENTID = dbutils.secrets.get(scope=f"servername{step_}", key=f"{step_}-synapse-sqlpool-sp-id")
@@ -299,12 +310,6 @@ def inject_table_to_sql(table_loc, table, schema):
 
     # load df
     df = spark.read.format("parquet").load(f"/{pathing_}").drop('__index_level_0__')
-
-    # make some custom fixes for now
-    if table in ['ProgramQualification', 'RackCharacteristic', 'RackFeature', 'ResourceDesign', 'CloudNPI']:
-        col_list = [col for col, type in df.dtypes if type == 'float']
-        for col in col_list:
-            df = df.withColumn(col, F.col(col).cast('double'))
 
     # check for excessively long strings; arbitrary but seems to be a good spot for synapse sql
     long_string_cols = total_excessive_cols[table_loc]
@@ -341,12 +346,12 @@ def inject_table_to_sql(table_loc, table, schema):
     df.write \
     .mode("append") \
     .format("com.databricks.spark.sqldw") \
-    .option("url", f"jdbc:sqlserver://chiemoad{step_}.sql.azuresynapse.net:1433;database=moad_sql;MARS_Connection=yes;encrypt=true;trustServerCertificate=true;hostNameInCertificate=*.sql.azuresynapse.net;loginTimeout=30") \
+    .option("url", f"jdbc:sqlserver://servername{step_}.sql.azuresynapse.net:1433;database=db_name;MARS_Connection=yes;encrypt=true;trustServerCertificate=true;hostNameInCertificate=*.sql.azuresynapse.net;loginTimeout=30") \
     .option("useAzureMSI", "true") \
     .option("enableServicePrincipalAuth", "true") \
     .option("dbTable", f"{schema}.{table}") \
     .option("truncate", "true") \
-    .option("tempDir", f"abfss://moad{step_}lakefs@moad{step_}lake.dfs.core.windows.net/temp") \
+    .option("tempDir", f"abfss://servername{step_}lakefs@servername{step_}lake.dfs.core.windows.net/temp") \
     .option("maxErrors", 100) \
     .save()
 
