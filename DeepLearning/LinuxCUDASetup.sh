@@ -1,4 +1,4 @@
-# remove cuda toolkit; https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#removing-cuda-toolkit-and-driver
+# remove cuda toolkit
 sudo apt-get --purge remove "*cuda*" "*cublas*" "*cufft*" "*cufile*" "*curand*" \
  "*cusolver*" "*cusparse*" "*gds-tools*" "*npp*" "*nvjpeg*" "nsight*" "*nvvm*"
 
@@ -54,4 +54,8 @@ conda activate ml
 conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
 pip install deepspeed accelerate sentencepiece
+
+# run deepspeed
+deepspeed --num_gpus 4 deepspeed_trainer.py
+
 
