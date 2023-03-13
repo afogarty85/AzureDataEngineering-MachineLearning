@@ -51,11 +51,8 @@ sudo ./Miniconda3-latest-Linux-x86_64.sh
 # create env
 conda create --name ml python=3.8
 conda activate ml
-conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
+pip3 install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu117
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
 pip install deepspeed accelerate sentencepiece
-
-# run deepspeed
-deepspeed --num_gpus 4 deepspeed_trainer.py
 
 
