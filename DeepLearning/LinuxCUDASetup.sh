@@ -54,7 +54,7 @@ conda create --name ml python=3.8
 conda activate ml
 conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
-pip install deepspeed==0.8.1 accelerate sentencepiece
+pip install deepspeed==0.8.1 accelerate sentencepiece evaluate
 
 # run deepspeed
 deepspeed --num_gpus 4 deepspeed_trainer.py
