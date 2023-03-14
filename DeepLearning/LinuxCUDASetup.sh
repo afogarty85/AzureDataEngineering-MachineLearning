@@ -32,6 +32,7 @@ sudo apt-get -y install cuda
 sudo reboot
 
 # Tesla K80 Change Requirement, If K80:
+sudo apt-get purge nvidia-*
 sudo apt install libnvidia-common-470
 sudo apt install nvidia-driver-470
 sudo reboot
@@ -51,8 +52,6 @@ sudo ./Miniconda3-latest-Linux-x86_64.sh
 # create env
 conda create --name ml python=3.8
 conda activate ml
-pip3 install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu117
+conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
 pip install deepspeed accelerate sentencepiece
-
-
