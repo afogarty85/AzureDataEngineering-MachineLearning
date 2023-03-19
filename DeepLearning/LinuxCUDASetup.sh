@@ -41,6 +41,11 @@ sudo reboot
 export PATH=/usr/local/cuda-11.7/bin${PATH:+:${PATH}}
 export LD_LIBRARY_PATH=/usr/local/cuda-11.7/lib64\${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 
+# if WSL:
+sudo vim ~/.bashrc
+# set:
+export PATH=/usr/local/cuda-11.7bin:$PATH
+
 # check install
 nvidia-smi
 nvcc -V
