@@ -61,8 +61,4 @@ conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvi
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
 pip install deepspeed==0.8.1 accelerate sentencepiece evaluate
 
-# run deepspeed
-deepspeed --num_gpus 4 deepspeed_trainer.py
-
-
 
