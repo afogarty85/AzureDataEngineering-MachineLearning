@@ -50,6 +50,10 @@ export PATH=/usr/local/cuda-11.7bin:$PATH
 nvidia-smi
 nvcc -V
 
+# cudnn
+# download file
+sudo dpkg -i cudnn-local-repo-${OS}-8.8.1.3_1.0-1_amd64.deb
+
 # install miniconda
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 sudo ./Miniconda3-latest-Linux-x86_64.sh
