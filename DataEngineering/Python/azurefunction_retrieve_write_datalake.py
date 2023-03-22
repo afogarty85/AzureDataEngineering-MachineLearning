@@ -9,6 +9,8 @@ from azure.identity import ClientSecretCredential
 
 
 # to build; func azure functionapp publish functionappnamehere -b remote --force
+# reach via cURL: 
+# curl -v --header "Content-Type: application/json" --data "{\"file_path\": \"/file/path/filename.xlsx\"}" https://functionappname.azurewebsites.net/api/ses?code=apikeyhere
 
 # init app
 app = func.FunctionApp()
