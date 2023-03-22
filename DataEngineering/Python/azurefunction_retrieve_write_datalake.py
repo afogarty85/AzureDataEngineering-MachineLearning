@@ -93,7 +93,7 @@ def write_parquet(df, write_path):
 
 @app.function_name(name="HttpTrigger1")
 @app.route(route="ses")
-def BragaExploiter(req: func.HttpRequest) -> func.HttpResponse:
+def FileExploiter(req: func.HttpRequest) -> func.HttpResponse:
      logging.info('Python HTTP trigger function processed a request.')
 
      file_path = req.params.get('file_path')
