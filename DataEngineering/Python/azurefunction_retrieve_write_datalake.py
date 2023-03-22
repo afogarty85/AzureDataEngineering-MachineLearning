@@ -114,8 +114,9 @@ def BragaExploiter(req: func.HttpRequest) -> func.HttpResponse:
      # report state
      logging.info(f'Downloaded bytes with len: {len(downloaded_bytes)}')
 
-     # table 1: braga -- how many licenses will I use
+     # get xlsx as bytes
      df = pd.read_excel(io.BytesIO(downloaded_bytes), skiprows=16, sheet_name='sheet1')
+
      # report state
      logging.info(f'Opened DF: {df.shape}')
 
