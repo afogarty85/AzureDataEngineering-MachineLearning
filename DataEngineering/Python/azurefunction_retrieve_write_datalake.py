@@ -8,7 +8,7 @@ from azure.storage.filedatalake import DataLakeServiceClient
 from azure.identity import ClientSecretCredential
 
 
-# to build; func azure functionapp publish ses-excel-parsing -b remote --force
+# to build; func azure functionapp publish functionappnamehere -b remote --force
 
 # init app
 app = func.FunctionApp()
