@@ -1,0 +1,19 @@
+# steps to get bitlocker to read its key from keyvault on an azure vm
+
+# open powershell
+
+# install powershell az
+Install-Module -Name Az -Scope CurrentUser -Repository PSGallery -Force
+
+# sign in
+Connect-AzAccount
+
+# create kv for vm -- MUST be premium
+New-AzKeyvault -name "kv_name_here" -ResourceGroupName "rg_here" -Location "eastus" -EnabledForDiskEncryption -Sku "Premium"
+
+# enable disk encryption
+Set-AzKeyVaultAccessPolicy -VaultName "kv_name_here" -ResourceGroupName "rg_here" -EnabledForDiskEncryption
+
+# add kek
+Add-AzKeyVaultKey -Name "myKEK" -VaultName "kv_name_here" -Destination "HSM" -Size 4096
+
