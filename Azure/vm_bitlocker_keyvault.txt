@@ -1,6 +1,6 @@
-# steps to get bitlocker to read its key from keyvault on an azure vm
+# steps to get bitlocker to read its key from keyvault on a windows azure vm
 
-# open powershell
+# open powershell on the vm
 
 # install powershell az
 Install-Module -Name Az -Scope CurrentUser -Repository PSGallery -Force
