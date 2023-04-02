@@ -18,7 +18,7 @@ from hyperopt import hp, fmin, tpe, STATUS_OK, Trials
 from hyperopt.early_stop import no_progress_loss
 import itertools
 from argparse import ArgumentParser
-
+torch.backends.cuda.matmul.allow_tf32 = True
 
 # set parser requirements
 parser = ArgumentParser(description="HyperOpt Tuning")
