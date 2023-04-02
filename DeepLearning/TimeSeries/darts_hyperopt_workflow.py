@@ -217,9 +217,9 @@ config_map = {
             "nhits": {'params': {
                 'model': hp.choice('model', [NHiTSModel,]),
                 # GFM Specific
-                'num_stacks': hp.quniform('num_stacks', 1, 36, 2),
-                'num_blocks': hp.quniform('num_blocks', 1, 12, 1),
-                'num_layers': hp.quniform('num_layers', 1, 12, 1),
+                'num_stacks': hp.quniform('num_stacks', 1, 24, 2),
+                'num_blocks': hp.quniform('num_blocks', 1, 8, 1),
+                'num_layers': hp.quniform('num_layers', 1, 8, 1),
                 'layer_widths': hp.quniform('layer_widths', 128, 1024, 32),
                 # encoder
                 'add_encoders': hp.choice('add_encoders', [None, 
@@ -234,9 +234,9 @@ config_map = {
             "nbeatsg": {'params': {
                 'model': hp.choice('model', [NBEATSModel,]),
                 # GFM Specific
-                'num_stacks': hp.quniform('num_stacks', 1, 36, 2),
-                'num_blocks': hp.quniform('num_blocks', 1, 12, 1),
-                'num_layers': hp.quniform('num_layers', 1, 12, 1),
+                'num_stacks': hp.quniform('num_stacks', 1, 24, 2),
+                'num_blocks': hp.quniform('num_blocks', 1, 8, 1),
+                'num_layers': hp.quniform('num_layers', 1, 8, 1),
                 'layer_widths': hp.quniform('layer_widths', 128, 1024, 32),
                 # NBEATS Specific
                 'generic_architecture': hp.choice('generic_architecture', [True]),
@@ -253,9 +253,9 @@ config_map = {
             "nbeats": {'params': {
                 'model': hp.choice('model', [NBEATSModel,]),
                 # GFM Specific
-                'num_stacks': hp.quniform('num_stacks', 1, 36, 2),
-                'num_blocks': hp.quniform('num_blocks', 1, 12, 1),
-                'num_layers': hp.quniform('num_layers', 1, 12, 1),
+                'num_stacks': hp.quniform('num_stacks', 1, 24, 2),
+                'num_blocks': hp.quniform('num_blocks', 1, 8, 1),
+                'num_layers': hp.quniform('num_layers', 1, 8, 1),
                 'layer_widths': hp.quniform('layer_widths', 128, 1024, 32),
                 # NBEATS Specific
                 'generic_architecture': hp.choice('generic_architecture', [False]),
@@ -272,7 +272,7 @@ config_map = {
             "tft": {'params': {
                 'model': hp.choice('model', [TFTModel,]),
                  # TFT Specific
-                'hidden_size': hp.quniform('hidden_size', 64, 1024, 32),
+                'hidden_size': hp.quniform('hidden_size', 64, 768, 32),
                 'lstm_layers': hp.quniform('lstm_layers', 1, 4, 1),
                 'num_attention_heads': hp.quniform('num_attention_heads', 1, 4, 1),
                 'dropout': hp.uniform('dropout', 1e-2, 1e-1),
