@@ -20,17 +20,20 @@ import itertools
 from argparse import ArgumentParser
 torch.backends.cuda.matmul.allow_tf32 = True
 
+
 # set parser requirements
 parser = ArgumentParser(description="HyperOpt Tuning")
 parser.add_argument(
     "--name",
     required=True,
     type=str,
+    default='all',
     help="Name of model to run",
 )
 parser.add_argument(
     "--horizon",
     required=True,
+    default=6,
     type=int,
     help="Timesteps to model",
 )
@@ -146,7 +149,7 @@ def train_fn(params):
                                                             'layer_widths', 'batch_size', 'expansion_coefficient_dim',
                                                             'generic_architecture', 'input_chunk_length']}
 
-    elif args.name == 'tft_model':
+    elif args.name == 'tft':
         print('TFT Model Triggered!')
         # subset params for kwargs
         mkwargs = {k: v for k, v in params.items() if k in ['add_encoders', 'lstm_layers', 'num_attention_heads', 'add_relative_index',
@@ -201,6 +204,7 @@ def train_fn(params):
 general_params = {
                 'col_sample': hp.quniform('col_sample', 0, len(col_combos)-1, 1),
                 'batch_size': hp.quniform('batch_size', 32, 1024, 32),
+                'dropout': hp.uniform('dropout', 1e-2, 1e-1),
                  # lr
                 'learning_rate': hp.uniform('learning_rate', 1e-5, 1e-2),
                 'patience': hp.quniform('patience', 1, 5, 1),
@@ -213,7 +217,7 @@ config_map = {
             "nhits": {'params': {
                 'model': hp.choice('model', [NHiTSModel,]),
                 # GFM Specific
-                'num_stacks': hp.quniform('num_stacks', 1, 64, 2),
+                'num_stacks': hp.quniform('num_stacks', 1, 36, 2),
                 'num_blocks': hp.quniform('num_blocks', 1, 12, 1),
                 'num_layers': hp.quniform('num_layers', 1, 12, 1),
                 'layer_widths': hp.quniform('layer_widths', 128, 1024, 32),
@@ -230,7 +234,7 @@ config_map = {
             "nbeatsg": {'params': {
                 'model': hp.choice('model', [NBEATSModel,]),
                 # GFM Specific
-                'num_stacks': hp.quniform('num_stacks', 1, 64, 2),
+                'num_stacks': hp.quniform('num_stacks', 1, 36, 2),
                 'num_blocks': hp.quniform('num_blocks', 1, 12, 1),
                 'num_layers': hp.quniform('num_layers', 1, 12, 1),
                 'layer_widths': hp.quniform('layer_widths', 128, 1024, 32),
@@ -249,7 +253,7 @@ config_map = {
             "nbeats": {'params': {
                 'model': hp.choice('model', [NBEATSModel,]),
                 # GFM Specific
-                'num_stacks': hp.quniform('num_stacks', 1, 64, 2),
+                'num_stacks': hp.quniform('num_stacks', 1, 36, 2),
                 'num_blocks': hp.quniform('num_blocks', 1, 12, 1),
                 'num_layers': hp.quniform('num_layers', 1, 12, 1),
                 'layer_widths': hp.quniform('layer_widths', 128, 1024, 32),
@@ -264,9 +268,34 @@ config_map = {
                                                          ]),
                 }
                 },
+
+            "tft": {'params': {
+                'model': hp.choice('model', [TFTModel,]),
+                 # TFT Specific
+                'hidden_size': hp.quniform('hidden_size', 64, 1024, 32),
+                'lstm_layers': hp.quniform('lstm_layers', 1, 4, 1),
+                'num_attention_heads': hp.quniform('num_attention_heads', 1, 4, 1),
+                'dropout': hp.uniform('dropout', 1e-2, 1e-1),
+                'add_relative_index': hp.choice('add_relative_index', [True]),
+                # encoder
+                'add_encoders': hp.choice('add_encoders', [None, 
+                                                         {"datetime_attribute": {"past": ["year", "month"]},
+                                                          "datetime_attribute": {"future": ["year", "month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
+                                                         {"datetime_attribute": {"past": ["month"]},
+                                                          "datetime_attribute": {"future": ["month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
+                                                         {"datetime_attribute": {"past": ["year"]},
+                                                          "datetime_attribute": {"future": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
+                                                         {"datetime_attribute": {"past": ["year", "month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+                                                         {"datetime_attribute": {"past": ["month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+                                                         {"datetime_attribute": {"past": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},                                                         
+                                                         ]),
+                }
+                },                
             'all': {'params': None}
 }
-
 
 # tell the CLI user that they mistyped the model
 if args.name not in config_map:
@@ -292,7 +321,7 @@ if args.name != 'all':
 
 else:
     argmin_storage = {}
-    for m_ in ['nhits', 'nbeats', 'nbeatsg']:
+    for m_ in ['nhits', 'nbeats', 'nbeatsg', 'tft']:
         # set args name
         args.name = m_
             
