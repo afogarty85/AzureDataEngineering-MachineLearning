@@ -1,3 +1,6 @@
+# also; https://go.microsoft.com/fwlink/?LinkId=121721&arch=x64
+# https://go.microsoft.com/fwlink/?LinkId=197094
+
 $vdmpathbase = "$env:systemdrive\wdav-update\{00000000-0000-0000-0000-"
 $vdmpathtime = Get-Date -format "yMMddHHmmss"
 $vdmpath = $vdmpathbase + $vdmpathtime + '}'
