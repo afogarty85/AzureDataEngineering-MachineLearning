@@ -8,9 +8,11 @@ from azure.storage.filedatalake import DataLakeServiceClient
 from azure.identity import ClientSecretCredential
 
 
-# to build; func azure functionapp publish functionappnamehere -b remote --force
+# to build; func azure functionapp publish functionappnamehere --build remote --publish-local-settings -i --overwrite-settings -y
+# for local build: func start
+
 # reach via cURL: 
-# curl -v --header "Content-Type: application/json" --data "{\"file_path\": \"/file/path/filename.xlsx\"}" https://functionappname.azurewebsites.net/api/ses?code=apikeyhere
+# curl -v --header "Content-Type: application/json" --data "{\"file_path\": \"/file/path/filename.xlsx\"}" https://functionappname.azurewebsites.net/api/AppRouteHere?code=apikeyhere
 
 # init app
 app = func.FunctionApp()
