@@ -1,13 +1,9 @@
-# also; https://go.microsoft.com/fwlink/?LinkId=121721&arch=x64
-# https://go.microsoft.com/fwlink/?LinkId=197094
+# keep VM up-to-date with anti-virus
 
-$vdmpathbase = "$env:systemdrive\wdav-update\{00000000-0000-0000-0000-"
-$vdmpathtime = Get-Date -format "yMMddHHmmss"
-$vdmpath = $vdmpathbase + $vdmpathtime + '}'
-$vdmpackage = $vdmpath + '\mpam-fe.exe'
+wget https://go.microsoft.com/fwlink/?LinkId=197094 -OutFile nis.exe
 
-New-Item -ItemType Directory -Force -Path $vdmpath | Out-Null
+wget https://go.microsoft.com/fwlink/?LinkId=121721"&"arch=x64 -OutFile mpam-fe.exe
 
-Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?LinkID=121721&arch=x64' -OutFile $vdmpackage
+nis.exe
 
-Start-Process -FilePath $vdmpackage -WorkingDirectory $vdmpath -ArgumentList "/x"
+mpam-fe.exe
