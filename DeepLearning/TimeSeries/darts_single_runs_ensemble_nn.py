@@ -27,7 +27,7 @@ from sklearn.metrics import mean_absolute_percentage_error
 np.set_printoptions(suppress=True, formatter={'float_kind':'{:0.2f}'.format})
 
 
-def configure_callbacks(model_name):
+def configure_callbacks():
     early_stop = EarlyStopping(monitor="train_loss", mode="min", patience=5, min_delta=0.05,)
     return [early_stop]
 
@@ -47,10 +47,10 @@ def trainer(series, target_transformer, horizon, past_covariates=None,  num_samp
     return preds
 
 
-def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, filter_argmins=False, filter_score=None):
+
+def ensemble_runner(tseries, argmin_paths, horizon, bagging=True, filter_argmins=False, filter_score=None):
     '''
     params:
-        model_name; string -- the name of the model
         tseries; dataframe -- the dataframe of timeseries
         params; list -- paths to the argmin output(s) derived from ensemble_tuner.py
         horizon; int -- timesteps to predict
@@ -74,9 +74,20 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
 
     # paste all kwargs
     config_map = {'add_encoders': [None, 
+                    {"datetime_attribute": {"past": ["year", "month"]},
+                    "datetime_attribute": {"future": ["year", "month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
+                    {"datetime_attribute": {"past": ["month"]},
+                    "datetime_attribute": {"future": ["month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
+                    {"datetime_attribute": {"past": ["year"]},
+                    "datetime_attribute": {"future": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
                     {"datetime_attribute": {"past": ["year", "month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
                     {"datetime_attribute": {"past": ["month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
                     {"datetime_attribute": {"past": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
+
                     ],
 
                     'pooling_kernel_sizes': [ [(2,), (2,), (2,)],
@@ -95,8 +106,10 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
                     'num_layers': 2,
                     'num_blocks': 1,
                     'layer_widths': 512,
+                    'add_relative_index': [True],
                     'nhits': NHiTSModel,
-                    'nbeats': NBEATSModel,
+                    'nbeatsg': NBEATSModel,
+                    'nbeatsi': NBEATSModel,
                     'tft': TFTModel,
 
                     }
@@ -107,10 +120,10 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
     mkwarg_list = ['add_encoders', 'num_stacks', 'num_layers',
                 'num_blocks', 'layer_widths', 'batch_size',
                 'input_chunk_length', 'n_freq_downsample',
-                'pooling_kernel_sizes', 'random_state', 'loss_fn',
-                'optimizer_kwargs']
+                'pooling_kernel_sizes', 'random_state', 'loss_fn', 'hidden_size',
+                'optimizer_kwargs', 'lstm_layers', 'num_attention_heads', 'add_relative_index',]
 
-    mparam_list = ['factor', 'patience']
+    mparam_list = ['factor', 'patience', 'model_name']
 
 
     # unpack argmin dict
@@ -121,7 +134,7 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
             t_vals = v['misc']['vals']
             # turn to all scalar
             t_vals = {k: int(v[0])
-                        if k not in ['input_chunk_length', 'loss_fn', 'optimizer_kwargs', 'random_state'] else 
+                        if k not in ['input_chunk_length', 'loss_fn', 'optimizer_kwargs', 'random_state', 'model_name'] else 
                         v
                         for k, v in t_vals.items() 
                     }
@@ -135,7 +148,7 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
         for k_ in v:
             if k_ not in config_map.keys():
                 continue
-            elif k_ in ['pooling_kernel_sizes', 'n_freq_downsample', 'add_encoders']:
+            elif k_ in ['pooling_kernel_sizes', 'n_freq_downsample', 'add_encoders', 'model_name']:
                 mkwargs[k][k_] = config_map[k_][mkwargs[k][k_]]
             else:
                 mkwargs[k][k_] = config_map[k_]
@@ -146,17 +159,23 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
         t_vals = v['misc']['vals']
         t_vals = {k: v for k, v in t_vals.items() if k in mparam_list}
         # turn to all scalar
-        t_vals = {k: v[0] for k, v in t_vals.items() }    
+        t_vals = {k: v[0] if k not in ['model_name'] else v  for k, v in t_vals.items() }
+        mparams[k] = t_vals
+    
+    # swap mparams
+    for k, v in mparams.items():
+        t_vals = v
+        t_vals['model_name'] = config_map[t_vals['model_name']]
         mparams[k] = t_vals
 
     # build n-models
     model_list = [
-        config_map[model_name](**v,
+        mparams[k]['model_name'](**v,
                     # fixed params
                     output_chunk_length=horizon,
                     #likelihood=None,
                     likelihood=QuantileRegression(quantiles=[0.01, 0.05, 0.2, 0.5, 0.8, 0.95, 0.99]),
-                    pl_trainer_kwargs={"callbacks": configure_callbacks(model_name)},
+                    pl_trainer_kwargs={"callbacks": configure_callbacks()},
                     lr_scheduler_cls=torch.optim.lr_scheduler.ReduceLROnPlateau,
                     lr_scheduler_kwargs={'monitor': 'train_loss', 'factor': mparams[k]['factor'], 'patience': mparams[k]['patience']},
                     force_reset=True,
@@ -173,12 +192,12 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
         mkwargs[k] = t_vals
 
     bagging_list = [
-        config_map[model_name](**v,
+        mparams[k]['model_name'](**v,
                     # fixed params
                     output_chunk_length=horizon,
                     #likelihood=None,
                     likelihood=QuantileRegression(quantiles=[0.01, 0.05, 0.2, 0.5, 0.8, 0.95, 0.99]),
-                    pl_trainer_kwargs={"callbacks": configure_callbacks(model_name)},
+                    pl_trainer_kwargs={"callbacks": configure_callbacks()},
                     lr_scheduler_cls=torch.optim.lr_scheduler.ReduceLROnPlateau,
                     lr_scheduler_kwargs={'monitor': 'train_loss', 'factor': mparams[k]['factor'], 'patience': mparams[k]['patience']},
                     force_reset=True,
@@ -198,15 +217,10 @@ def ensemble_runner(model_name, tseries, argmin_paths, horizon, bagging=True, fi
 
 
 # load df
-tseries = pd.read_parquet(r'/mnt/c/Users/afogarty/Desktop/darts/tseries_monthly.parquet')
-
-# picke paths
-argmin_paths = ['/mnt/c/Users/afogarty/Desktop/darts/argmin_nbeatsi',
-                '/mnt/c/Users/afogarty/Desktop/darts/argmin_nbeatsg']
+tseries = pd.read_parquet(r'/mnt/c/Users/afogarty/Desktop/darts/tseries_monthly_important.parquet')
 
 # set some choices
-model_name = 'nbeats'
-col_sample = 118  # top performers; 118, 13, 21, 80, 96
+col_sample = 94  # top performers; 118, 13, 21, 80, 96, 94
 horizon = 6
 
 # available features to iterate over
@@ -273,14 +287,24 @@ val_set_transformed = static_transformer.transform(val_set_transformed)
 # get feature order
 featureOrder = np.concatenate([train_set[i].static_covariates.values[0] for i in range(len(train_set))])
 
+
+# pickle paths
+#model_name = 'nbeats'
+argmin_paths = [
+                #'/mnt/c/Users/afogarty/Desktop/darts/argmin_nbeatsi',
+                #'/mnt/c/Users/afogarty/Desktop/darts/argmin_nbeatsg',
+                '/mnt/c/Users/afogarty/Desktop/darts/argmin_tft',
+                #'/mnt/c/Users/afogarty/Desktop/darts/argmin_nhits'
+                ]
+
 # generate models
-model_list = ensemble_runner(model_name=model_name,
+model_list = ensemble_runner(
                              tseries=tseries,
                              argmin_paths=argmin_paths,
                              horizon=horizon,
                              bagging=True,
                              filter_argmins=False,
-                             filter_score=95.0)  
+                             filter_score=155)
 
 # init ensemble model
 ensemble_model = RegressionEnsembleModel(forecasting_models=model_list,
@@ -294,17 +318,16 @@ preds = trainer(series=train_set_transformed,
                     past_covariates=past_train_cov_transformed,
                     num_samples=500)  # 1 if no likelihood
 
-
 # inverse scale
 preds_inv = target_transformer.inverse_transform(preds)    
 
-# check group loc
-tseries_scalar = list(featureOrder).index('calibredrc')
-
 # getsmapes
 smapes = smape(actual_series=val_set, pred_series=preds_inv)
-print(f'the average smape for all series: {np.mean(smapes)}')
 print(f'the median smape for all series: {np.median(smapes)}')
+print(f'the average smape for all series: {np.mean(smapes)}')
+
+# check group loc
+tseries_scalar = list(featureOrder).index('msimhdlsim')  # msimhdlsim
 
 # MAPE/SMAPE for caliredrc
 print("MAPE: {:.2f}%".format(mape(val_set[tseries_scalar], preds_inv[tseries_scalar])))  # 26
@@ -315,8 +338,6 @@ print("MASE: {:.2f}%".format(mase(val_set[tseries_scalar], preds_inv[tseries_sca
 fig, axs = plt.subplots(1,  figsize=(6, 6))
 val_set[tseries_scalar].plot(ax=axs, label='true')
 preds_inv[tseries_scalar].plot(ax=axs, low_quantile=0.5, high_quantile=0.95, label='pred')
-
-
 
 
 

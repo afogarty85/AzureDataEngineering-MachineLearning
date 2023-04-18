@@ -77,11 +77,14 @@ def train_fn(params):
             params[key] = value
 
     # load df
-    tseries = pd.read_parquet(r'/mnt/c/Users/afogarty/Desktop/darts/tseries_monthly.parquet')
+    tseries = pd.read_parquet(r'/mnt/c/Users/afogarty/Desktop/darts/tseries_monthly_important.parquet')
 
     # add 1 so we can use mape loss if so
     if (tseries['featureNamePeak'] == 0.0).any():
         tseries['featureNamePeak'] = tseries['featureNamePeak'] + 1
+
+    # drop test set
+    tseries = tseries.drop(tseries.groupby(['featureName']).tail(args.horizon).index, axis=0).reset_index(drop=True)
 
     # build time series df
     series_multi = TimeSeries.from_group_dataframe(
@@ -309,6 +312,10 @@ config_map = {
                 'add_relative_index': hp.choice('add_relative_index', [True]),
                 # encoder
                 'add_encoders': hp.choice('add_encoders', [None, 
+                                                         {"datetime_attribute": {"past": ["year", "month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+                                                         {"datetime_attribute": {"past": ["month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+                                                         {"datetime_attribute": {"past": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
+
                                                          {"datetime_attribute": {"past": ["year", "month"]},
                                                           "datetime_attribute": {"future": ["year", "month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
 
@@ -316,11 +323,7 @@ config_map = {
                                                           "datetime_attribute": {"future": ["month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
 
                                                          {"datetime_attribute": {"past": ["year"]},
-                                                          "datetime_attribute": {"future": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
-
-                                                         {"datetime_attribute": {"past": ["year", "month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
-                                                         {"datetime_attribute": {"past": ["month"]}, "transformer": Scaler(scaler=MaxAbsScaler())},
-                                                         {"datetime_attribute": {"past": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},                                                         
+                                                          "datetime_attribute": {"future": ["year"]}, "transformer": Scaler(scaler=MaxAbsScaler())},                                                                                                              
                                                          ]),
                 }
                 },                
@@ -344,7 +347,7 @@ for i in range(0, args.n_models):
     for loss_ in [MAELoss(), SmapeLoss(), MapeLoss()]:
 
         # init a set of input lengths to use;
-        for input_length_ in [2, 3, 4, 5, 6]:
+        for input_length_ in [3, 4, 5, 6, 7]:
 
             # random state for trial for ensemble variance
             random_state = np.random.randint(low=0, high=100000)
@@ -385,6 +388,7 @@ for i in range(0, args.n_models):
             argmin_storage[f'{args.name}' + str(counter)]['misc']['vals']['input_chunk_length'] = input_length_
             argmin_storage[f'{args.name}' + str(counter)]['misc']['vals']['loss_fn'] = loss_
             argmin_storage[f'{args.name}' + str(counter)]['misc']['vals']['random_state'] = random_state
+            argmin_storage[f'{args.name}' + str(counter)]['misc']['vals']['model_name'] = args.name
 
             # report to CLI
             print(f'the argmin is: {argmin}')
