@@ -298,7 +298,7 @@ for i in range(0, 49):
     # gen pinball loss and store
     try:
         pinball_loss_ = mean_pinball_loss(val_set[i].values(), preds_inv.values(), alpha=0.95)
-        pinball_loss_results.append(pinball_loss)
+        pinball_loss_results.append(pinball_loss_)
     except Exception as e:
         print(i, e)
         
@@ -307,4 +307,5 @@ for i in range(0, 49):
 # ensemble results
 print(np.median(smape_results))  # 55 @ 2 timesteps
 print(np.mean(smape_results))  # 73
+print(np.mean(pinball_loss_results))  # 23
 
