@@ -1,0 +1,40 @@
+# use ubuntu terminal
+
+# might need sudo chmod 666 /var/run/docker.sock
+
+# login to Azure
+az login
+
+# Login to your Azure Container Registry; Docker Desktop must be open
+az acr login -n <azure_container_registry_name>
+
+# set admin capability
+# az acr update -n <azure_container_registry_name> --admin-enabled true
+
+# Navigate to the folder with Dockerfile and then execute command below to build docker image
+sudo docker build -t <app_name>:v1 .
+
+# You need to tag docker image to be able to upload it
+sudo docker tag <app_name>:v1 <azure_container_registry_name>.azurecr.io/<app_name>:v1
+
+# Upload docker image to Azure Container Registry
+docker push <azure_container_registry_name>.azurecr.io/<app_name>:v1
+
+
+# az cli restart app
+az webapp restart --resource-group rg_moad_dev --name <azure_webapp_name>
+
+
+# test docker locally
+docker run --publish 8000:8000 <app_name>:v1
+
+# logs
+https://<azure_webapp_name>.scm.azurewebsites.net/api/logs/docker
+
+
+
+
+# local runs
+sudo docker build -t <app_name>:v1 .
+
+docker run --publish 8000:8000 <app_name>:v1
