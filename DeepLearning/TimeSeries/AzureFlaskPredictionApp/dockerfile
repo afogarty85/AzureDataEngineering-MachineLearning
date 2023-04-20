@@ -1,0 +1,21 @@
+FROM mcr.microsoft.com/azureml/minimal-ubuntu20.04-py38-cpu-inference:latest
+USER root
+
+RUN apt-get update
+RUN apt-get install python3-dev -y
+RUN apt-get install python3-pip -y
+RUN apt-get install unixodbc-dev -y
+
+RUN apt-get install curl -y
+RUN apt-get install apt-transport-https -y
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+
+RUN mkdir /code
+WORKDIR /code
+ADD requirements.txt /code/
+RUN pip install -r requirements.txt --no-cache-dir
+ADD . /code/
+
+EXPOSE 8000 5000
+
+CMD python app.py

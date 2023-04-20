@@ -1,0 +1,45 @@
+<html>
+  <head>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
+  </head>
+   <body>
+     <h1>Forecast for: {{series}} </h1>
+
+      <img src="{{ url_for('static', filename=graph) }}" />
+
+
+      <h1>{{series}}: Predicted Quantiles</h1>
+
+      <table>
+        <thead>
+
+          <tr>
+            {% for col in column_names %}
+            <th>
+            
+              {{col}}
+             
+            </th>
+            {% endfor %}
+          </tr>
+
+        </thead>
+        <tbody>
+          {% for row in row_data %}
+          <tr>
+            {% for col, row_ in zip(column_names, row) %}
+            <td>{{row_}}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+
+         
+        </tbody>
+  
+      </table>
+
+
+   </body>
+
+</html>

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+</head>
+
+<body>
+
+  <h1>Select a Forecast to Generate! </h1>
+  <form action="" method="post" role="form">
+    {{ form.csrf_token }}
+
+    <table>
+      <p>
+        {{ form.f_customerName.label}} {{ form.f_customerName() }}
+      </p>
+
+      <p>
+        {{ form.f_horizon.label}} {{ form.f_horizon() }}
+      </p>
+
+        <tr>
+          {{ form.submit(class_="btn") }}
+        </tr>
+
+    </table>
+
+
+</form>
+
+
+</body>
+
+</html>
+
