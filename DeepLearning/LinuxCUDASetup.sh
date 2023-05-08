@@ -55,11 +55,6 @@ nvcc -V
 sudo apt update -y && sudo apt full-upgrade -y && sudo apt autoremove -y && sudo apt clean -y && sudo apt autoclean -y
 sudo apt-get install libopenmpi-dev
 
-# cudnn
-# download file
-sudo dpkg -i cudnn-local-repo-${OS}-8.8.1.3_1.0-1_amd64.deb
-sudo apt install ./cudnn-local-repo-${OS}-8.8.1.3_1.0-1_amd64.deb
-
 # install miniconda
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 sudo ./Miniconda3-latest-Linux-x86_64.sh
