@@ -65,7 +65,11 @@ conda activate ml
 conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
 conda install -c "nvidia/label/cuda-11.7.0" cuda-toolkit
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
-pip install deepspeed accelerate sentencepiece evaluate ninja peft mpi4py
+pip install deepspeed accelerate sentencepiece evaluate ninja peft mpi4py --upgrade
 pip install bitsandbytes
+
+# add env to kernel list in azureml
+pip install jupyter
+python -m ipykernel install --user --name my_ml
 
 
