@@ -45,6 +45,7 @@ sudo reboot
 # if WSL:
 sudo vim ~/.bashrc
 # set:
+export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 export PATH=/usr/local/cuda-11.7bin:$PATH
 
 # check install
