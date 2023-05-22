@@ -63,7 +63,6 @@ sudo ./Miniconda3-latest-Linux-x86_64.sh
 conda create --name ml python=3.8
 conda activate ml
 conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
-conda install -c "nvidia/label/cuda-11.7.0" cuda-toolkit
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
 pip install deepspeed accelerate sentencepiece evaluate ninja peft mpi4py --upgrade
 pip install bitsandbytes
