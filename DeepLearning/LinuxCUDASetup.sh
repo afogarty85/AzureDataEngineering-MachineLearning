@@ -68,6 +68,9 @@ conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
 pip install deepspeed accelerate sentencepiece evaluate ninja peft mpi4py --upgrade
 pip install bitsandbytes
 
+# for bitsandbytes and wsl
+export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
+
 # add env to kernel list in azureml
 pip install jupyter
 python -m ipykernel install --user --name my_ml
