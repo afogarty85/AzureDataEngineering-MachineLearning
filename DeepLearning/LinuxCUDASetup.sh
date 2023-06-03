@@ -21,7 +21,7 @@ arch=x86_64
 # update gcc
 sudo apt install --reinstall gcc
 
-# cuda 11.7 toolkit network install
+# cuda 11.7 toolkit network install; if WSL -- do not install drivers, you get drivers through windows
 wget https://developer.download.nvidia.com/compute/cuda/repos/${OS}/${arch}/cuda-ubuntu2004.pin
 sudo mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600
 wget https://developer.download.nvidia.com/compute/cuda/11.7.0/local_installers/cuda-repo-${OS}-11-7-local_11.7.0-515.43.04-1_amd64.deb
