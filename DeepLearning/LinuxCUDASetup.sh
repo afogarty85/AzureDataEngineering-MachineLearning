@@ -42,7 +42,7 @@ sudo apt install nvidia-driver-470
 sudo reboot
 
 
-# if WSL:
+# if WSL -- add these export paths to .bashrc with vim:
 sudo vim ~/.bashrc
 
 # set:
