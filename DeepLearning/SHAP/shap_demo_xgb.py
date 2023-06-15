@@ -3,6 +3,7 @@ from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 import numpy as np
+from scipy.special import expit, logit
 import pandas as pd
 import shap
 np.random.seed(0)
