@@ -120,3 +120,54 @@ file_paths = loop.run_until_complete(find_files_by_path(path='RAW/Folder/SubFold
 # for each file found, retrieve the file as bytes
 loop = asyncio.get_event_loop()
 bytes_container = loop.run_until_complete(async_doc_main(paths=file_paths, semaphore=25))
+
+
+
+
+
+### alt fast method
+async def retrieve_adls_file_as_bytes(file_path):
+    """
+    Connects to ADLSGen2 and retrieves any file of choice as bytes
+    """
+    # get access to AAD
+    async with ClientSecretCredential(TENANT, CLIENTID, CLIENTSECRET) as credential:
+        # get access to ADLS
+        async with DataLakeServiceClient(
+            account_url=f"https://moaddevlake.dfs.core.windows.net", credential=credential,) as datalake_service_client:
+            # get access to FS
+            async with datalake_service_client.get_file_system_client(f"moaddevlakefs") as file_system_client:
+                file_client = file_system_client.get_file_client(f"/{file_path}")
+                print(f"Generating data ADLS from file path: {file_path}")
+                # pull and download file
+                download = await file_client.download_file(max_concurrency=75)
+                downloaded_bytes = await download.readall()
+                # report progress
+                print(f"Finished downloading bytes of length: {len(downloaded_bytes)}")
+    return downloaded_bytes
+
+async def async_main_request(semaphore, file_paths):
+    """
+    main caller
+    """
+    s = asyncio.Semaphore(value=semaphore)
+    return await asyncio.gather(*[retrieve_adls_file_as_bytes(file_path=path) for path in file_paths])
+
+import nest_asyncio
+from azure.storage.filedatalake.aio import DataLakeServiceClient
+from azure.identity.aio import ClientSecretCredential
+nest_asyncio.apply()
+
+CLIENTID = ''
+CLIENTSECRET = ''
+TENANT = ''
+
+file_paths = [
+            'RAW/FILE_PATH/dbo.Components.parquet',
+            'RAW/FILE_PATH/dbo.EditRequests.parquet'
+            ]
+
+# get data
+nest_asyncio.apply()
+loop = asyncio.get_event_loop()
+out = loop.run_until_complete(async_main_request(semaphore=24, file_paths=file_paths))
