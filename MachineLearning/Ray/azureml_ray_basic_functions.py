@@ -1,4 +1,3 @@
-
 from adlfs import AzureBlobFileSystem
 from azure.keyvault.secrets import SecretClient
 from azure.identity import DefaultAzureCredential
@@ -7,6 +6,7 @@ import ray
 import psutil
 import pandas as pd
 from ray.data import ActorPoolStrategy
+from azureml.core import Run
 
 
 if not ray.is_initialized():
@@ -38,6 +38,15 @@ ds = ray.data.read_parquet(
     filter=pc.field('instance_id').isin(['20230613']),   
     parallelism=num_partitions
 ).repartition(num_blocks=num_partitions, shuffle=False)
+
+# alternatively getting the data from AML Input
+# aml_context = Run.get_context()
+# ds = ray.data.read_parquet(aml_context.input_datasets['RandomizedTest'],
+#                             use_threads=True,
+#                             columns=feature_selection + ['SYNDROME', 'INPUT__YML__testname', 'instance_id'],
+#                             parallelism=num_partitions,
+#                             filter=pc.field('instance_id').isin(['20230613']),
+#                             ).repartition(num_partitions, shuffle=False)
 
 # get count
 ds.count()
