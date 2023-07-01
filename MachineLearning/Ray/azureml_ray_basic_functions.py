@@ -79,3 +79,18 @@ ds = ds.map_batches(
 
 # trigger operation
 ds.count()
+
+# get class label mappings
+classes = {label: i for i, label in enumerate(ds.unique("SYNDROME"))}
+
+# udf
+def transform_df(df: pd.DataFrame, classes) -> pd.DataFrame:
+    '''
+    map strings to int labels
+    '''
+    df['SYNDROME'] = df['SYNDROME'].map(classes)
+    return df
+
+# map
+print(f'Transforming data...')
+ds = ds.map_batches(transform_df, fn_kwargs={"classes": classes}, batch_format="pandas", compute=ActorPoolStrategy(min_size=2, max_size=num_cpus),)
