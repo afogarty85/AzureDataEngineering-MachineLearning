@@ -1,4 +1,4 @@
-class CountEncoder(Encoder):
+class CountEncoder():
     '''
     Lightly edited versions from Optimized Analytics Package for Spark Platform (OAP)
     '''    
@@ -30,7 +30,7 @@ class CountEncoder(Encoder):
         return agg_all
 
 
-class TargetEncoder(Encoder):
+class TargetEncoder():
 '''
 Lightly edited versions from Optimized Analytics Package for Spark Platform (OAP);
 Presupposes this column exists:
