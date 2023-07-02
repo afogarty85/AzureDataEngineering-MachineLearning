@@ -32,7 +32,9 @@ class CountEncoder(Encoder):
 
 class TargetEncoder(Encoder):
 '''
-Lightly edited versions from Optimized Analytics Package for Spark Platform (OAP)
+Lightly edited versions from Optimized Analytics Package for Spark Platform (OAP);
+Presupposes this column exists:
+df = df.withColumn("fold", F.round(F.rand(seed=42) * 10))
 '''
 def __init__(self, x_col_list, y_col_list, out_col_list, y_mean_list=None, smooth=20, seed=42,threshold=0):
     self.op_name = "TargetEncoder"
