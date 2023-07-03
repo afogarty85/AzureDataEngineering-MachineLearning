@@ -93,3 +93,87 @@ def transform(self, df):
         agg_per_fold = agg_per_fold.drop(f'count_all_{y_col}', f'count_{y_col}', f'sum_all_{y_col}', f'sum_{y_col}')
         agg_all = agg_all.drop(f'count_all_{y_col}', f'sum_all_{y_col}')
     return agg_all
+
+
+
+# some example code
+
+encode_cols = [
+                'test_suite',
+                'pipeline_job',
+                'testType',
+                'name',
+                'pipeline_repo_branch',
+                ]
+
+# get mean of y
+mean_y = train.groupBy().mean('y').collect()[0][0]
+
+# set fold col for train
+train = train.withColumn("fold", F.round(F.rand(seed=42) * 10))
+
+for col in encode_cols:
+    print(f"Now Count Encoding: {col}")
+    # fit count encoder
+    CE_ENC = CountEncoder(x_col_list=[col], y_col_list=['y'], out_col_list=[col + '_CE'])
+
+    # transform
+    tdf = CE_ENC.transform(train)
+
+    # join
+    train = train.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_CE'])
+    valid = valid.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_CE'])
+    test = test.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_CE'])
+    
+    # fit target encoder
+    print(f"Now Target Encoding: {col}")
+    TE_ENC = TargetEncoder(x_col_list=[col], y_col_list=['y'], out_col_list=[col + '_TE'], y_mean_list=[mean_y], smooth=10, seed=42, threshold=0)
+
+    # transform
+    tdf = TE_ENC.transform(train)
+
+    # join
+    train = train.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_TE'])
+    valid = valid.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_TE'])
+    test = test.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_TE'])    
+
+
+# OneHot
+# set cols
+one_hot_cols = [
+                'pipeline_repo',
+                'job_type',
+                'project',
+                'pipeline_name',
+            ]
+
+# convert strings to numeric
+si = StringIndexer(inputCols=one_hot_cols,  outputCols=[x + '_SI' for x in one_hot_cols])
+
+# convert to onehot
+ohe = OneHotEncoder(inputCols=[x + '_SI' for x in one_hot_cols],  outputCols=[x + '_OH' for x in one_hot_cols])
+
+# chain
+pipeline = Pipeline(stages=[si, ohe])
+
+# fit train
+pipeline = pipeline.fit(train)
+
+# transform
+train = pipeline.transform(train)
+valid = pipeline.transform(valid)
+test = pipeline.transform(test)
+
+# explode arr
+for col in one_hot_cols:
+    print(f"Now on col: {col}")
+
+    # unpack arr and gen n-new columns based on schema metadata
+    train =  train.withColumn(col + '_arr', vector_to_array(col + '_OH')) \
+                .select('*', *[F.col(col + '_arr')[i] for i in range( train.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
+
+    valid =  valid.withColumn(col + '_arr', vector_to_array(col + '_OH')) \
+                .select('*', *[F.col(col + '_arr')[i] for i in range( valid.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
+
+    test =  test.withColumn(col + '_arr', vector_to_array(col + '_OH')) \
+                .select('*', *[F.col(col + '_arr')[i] for i in range( test.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
