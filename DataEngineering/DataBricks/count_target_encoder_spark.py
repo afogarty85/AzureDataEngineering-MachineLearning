@@ -172,10 +172,10 @@ for col in one_hot_cols:
 
     # unpack arr and gen n-new columns based on schema metadata
     train =  train.withColumn(col + '_arr', vector_to_array(col + '_OH')) \
-                .select('*', *[F.col(col + '_arr')[i] for i in range( train.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
+                .select('*', *[F.col(col + '_arr')[i].cast('tinyint').alias(col + f'_arr_{i}') for i in range( train.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
 
     valid =  valid.withColumn(col + '_arr', vector_to_array(col + '_OH')) \
-                .select('*', *[F.col(col + '_arr')[i] for i in range( valid.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
+                .select('*', *[F.col(col + '_arr')[i].cast('tinyint').alias(col + f'_arr_{i}') for i in range( valid.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
 
     test =  test.withColumn(col + '_arr', vector_to_array(col + '_OH')) \
-                .select('*', *[F.col(col + '_arr')[i] for i in range( test.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
+                .select('*', *[F.col(col + '_arr')[i].cast('tinyint').alias(col + f'_arr_{i}') for i in range( test.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
