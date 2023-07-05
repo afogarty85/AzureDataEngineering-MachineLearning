@@ -7,8 +7,8 @@ set spark.databricks.delta.retryWriteConflict.limit = 3;
 set spark.sql.adaptive.skewJoin.enabled	= true;
 set spark.sql.adaptive.enabled = true;
 
--- spark.sql.shuffle.partitions; should be set such that we get 128mb of data on each partition
-
+spark.conf.set("spark.sql.shuffle.partitions", 96);  -- num cores
+spark.conf.set("spark.sql.files.maxPartitionBytes", 1024 * 1024 * 16)  -- if we dont have big data on the shuffle read; scale down file sizes from 128mb blocks to get more parallelism
 
 -- spark config for a cluster with 432gb memory and 64 cores on a single worker with 1 driver @ 32GB / 4 cores
 spark.storage.level MEMORY_AND_DISK_SER
