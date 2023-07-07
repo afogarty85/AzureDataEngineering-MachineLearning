@@ -6,10 +6,24 @@ wget https://go.microsoft.com/fwlink/?LinkId=121721"&"arch=x64 -OutFile C:\mpam-
 
 wget https://go.microsoft.com/fwlink/?LinkID=87341 -OutFile C:\mpfam-fe64.exe;
 
-.C:\nis.exe;
+cd C:\;
 
-.C:\mpam-fe.exe;
+.\nis.exe;
 
-.C:\mpfam-fe64.exe;
+.\mpam-fe.exe;
+
+.\mpfam-fe64.exe;
+
+Update-MpSignature;
+
+cd "C:\Program Files\Windows Defender";
+
+.\MpCmdRun.exe -removedefinitions -dynamicsignatures;
+
+.\MpCmdRun.exe -SignatureUpdate;
+
+Start-MpScan -ScanType QuickScan;
+
+Exit;
 
 Get-MpComputerStatus | select *updated, *version
