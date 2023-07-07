@@ -4,41 +4,38 @@ class CountEncoder():
     '''    
     def __init__(self, x_col_list, y_col_list, out_col_list):
         self.op_name = "CountEncoder"
-        self.x_col_list = x_col_list
-        self.y_col_list = y_col_list
-        self.out_col_list = out_col_list
+        self.x_col_list = [x_col_list] if not isinstance(x_col_list, list) else x_col_list
+        self.y_col_list = [y_col_list] if not isinstance(y_col_list, list) else y_col_list
+        self.out_col_list = [out_col_list] if not isinstance(out_col_list, list) else out_col_list
         self.expected_list_size = len(y_col_list)
         if len(self.out_col_list) < self.expected_list_size:
             raise ValueError("CountEncoder __init__, input out_col_list should be same size as y_col_list")
 
     def transform(self, df):
-        x_col = self.x_col_list
-        cols = [x_col] if isinstance(x_col, str) else x_col
-        agg_all = df.groupby(cols)
+        agg_all = df.groupby(self.x_col_list)
 
         all_list = []
 
         for i in range(0, self.expected_list_size):
             y_col = self.y_col_list[i]
-            out_col = self.out_col_list[i]
+            out_col = '_'.join(self.out_col_list)
             all_list.append(F.count(y_col).alias(f'{out_col}'))
 
         agg_all = agg_all.agg(*all_list)
         for i in range(0, self.expected_list_size):
-            out_col = self.out_col_list[i]
+            out_col = '_'.join(self.out_col_list)
             agg_all = agg_all.withColumn(out_col, F.col(out_col).cast(IntegerType()))
         return agg_all
-
-
+    
 class TargetEncoder():
     '''
     Lightly edited versions from Optimized Analytics Package for Spark Platform (OAP)
     '''
     def __init__(self, x_col_list, y_col_list, out_col_list, y_mean_list=None, smooth=20, seed=42,threshold=0):
         self.op_name = "TargetEncoder"
-        self.x_col_list = x_col_list
-        self.y_col_list = y_col_list
-        self.out_col_list = out_col_list
+        self.x_col_list = [x_col_list] if not isinstance(x_col_list, list) else x_col_list
+        self.y_col_list = [y_col_list] if not isinstance(y_col_list, list) else y_col_list
+        self.out_col_list = [out_col_list] if not isinstance(out_col_list, list) else out_col_list
         self.y_mean_list = y_mean_list
         self.seed = seed
         self.smooth = smooth
@@ -99,13 +96,11 @@ class TargetEncoder():
 
 
 # some example code
-
 encode_cols = [
-                'test_suite',
+                ['name', 'test_suite', 'pipeline_name'],
                 'pipeline_job',
+                'project',
                 'testType',
-                'name',
-                'pipeline_repo_branch',
                 ]
 
 # get mean of y
@@ -116,28 +111,45 @@ train = train.withColumn("fold", F.round(F.rand(seed=42) * 10))
 
 for col in encode_cols:
     print(f"Now Count Encoding: {col}")
-    # fit count encoder
-    CE_ENC = CountEncoder(x_col_list=[col], y_col_list=['y'], out_col_list=[col + '_CE'])
+
+    # gen out column name
+    if isinstance(col, list):
+        out_col_temp = '_'.join(col) + '_CE'
+    else:
+        out_col_temp = col + '_CE'
+    
+    # fit
+    CE_ENC = CountEncoder(x_col_list=col, y_col_list=['y'], out_col_list=out_col_temp)
 
     # transform
     tdf = CE_ENC.transform(train)
 
     # join
-    train = train.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_CE'])
-    valid = valid.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_CE'])
-    test = test.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_CE'])
+    train = train.join(tdf.hint('broadcast'), how='left', on=col).fillna(0, subset=out_col_temp)
+    valid = valid.join(tdf.hint('broadcast'), how='left', on=col).fillna(0, subset=out_col_temp)
+    test = test.join(tdf.hint('broadcast'), how='left', on=col).fillna(0, subset=out_col_temp)
     
     # fit target encoder
     print(f"Now Target Encoding: {col}")
-    TE_ENC = TargetEncoder(x_col_list=[col], y_col_list=['y'], out_col_list=[col + '_TE'], y_mean_list=[mean_y], smooth=10, seed=42, threshold=0)
+
+    # gen out column name
+    if isinstance(col, list):
+        out_col_temp = '_'.join(col) + '_TE'
+    else:
+        out_col_temp = col + '_TE'
+    
+    # fit
+    TE_ENC = TargetEncoder(x_col_list=col, y_col_list=['y'], out_col_list=out_col_temp, y_mean_list=[mean_y], smooth=10, seed=42, threshold=0)
 
     # transform
     tdf = TE_ENC.transform(train)
 
     # join
-    train = train.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_TE'])
-    valid = valid.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_TE'])
-    test = test.join(tdf.hint('broadcast'), how='left', on=[col]).fillna(0, subset=[col + '_TE'])    
+    train = train.join(tdf.hint('broadcast'), how='left', on=col).fillna(0, subset=out_col_temp)
+    valid = valid.join(tdf.hint('broadcast'), how='left', on=col).fillna(0, subset=out_col_temp)
+    test = test.join(tdf.hint('broadcast'), how='left', on=col).fillna(0, subset=out_col_temp)
+
+    print('\n')
 
 
 # OneHot
