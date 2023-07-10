@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
+import pickle
 
 # more verbose
 #ray.data.DataContext.get_current().execution_options.verbose_progress = True
@@ -196,6 +197,13 @@ result.error
 result.metrics_dataframe
 result.metrics_dataframe.query("split == 'val'").tail(3)
 
+# write to pickle / save to cloud storage; 2nd best checkpoint
+ckpt = Checkpoint.from_directory(result.best_checkpoints[1][0].to_directory());
+my_dict = ckpt.to_dict();
+
+# pickle
+with open('best_ckpt.pickle', 'wb') as handle:
+    pickle.dump(my_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 # tune
 config = {
