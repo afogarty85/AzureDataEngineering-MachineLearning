@@ -12,8 +12,8 @@ dependencies:
   - pip
   - nvidia::cudatoolkit=11.8.0
   - pip:
-      - azureml-mlflow==1.48.0
-      - azureml-defaults==1.48.0
+      - azureml-mlflow
+      - azureml-defaults
       - xgboost_ray
       - scikit-learn
       - ray-on-aml
