@@ -9,7 +9,6 @@ dependencies:
   - pytorch::pytorch>=2.0
   - pytorch::torchaudio
   - pytorch::torchvision
-  - pytorch::pytorch-cuda=11.8
   - pip
   - nvidia::cudatoolkit=11.8.0
   - pip:
