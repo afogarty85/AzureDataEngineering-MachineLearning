@@ -10,7 +10,7 @@ dependencies:
   - pytorch::torchaudio
   - pytorch::torchvision
   - pip
-  - nvidia::cudatoolkit=11.8.0
+  - nvidia::cudatoolkit=11.8
   - pip:
       - azureml-mlflow
       - azureml-defaults
