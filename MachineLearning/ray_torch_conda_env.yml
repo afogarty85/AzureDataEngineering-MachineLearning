@@ -11,7 +11,7 @@ dependencies:
   - pytorch::torchvision
   - pytorch::pytorch-cuda=11.8
   - pip
-  - conda-forge::cudatoolkit=11.8.0
+  - nvidia::cudatoolkit=11.8.0
   - pip:
       - azureml-mlflow==1.48.0
       - azureml-defaults==1.48.0
