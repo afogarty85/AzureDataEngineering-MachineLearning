@@ -1,4 +1,4 @@
-name: my_ml
+name: my_ml_env
 channels:
   - anaconda
   - conda-forge
@@ -6,23 +6,25 @@ channels:
   - pytorch
 dependencies:
   - python=3.10
-  - pytorch::pytorch>=2.0
-  - pytorch::torchaudio
-  - pytorch::torchvision
-  - pip
+  - pip=22.3.1
   - conda-forge::cudatoolkit=11.8
   - pip:
       - azureml-mlflow
       - azureml-defaults
-      - xgboost_ray
       - scikit-learn
-      - ray-on-aml
       - numpy
       - pyarrow
       - pandas
       - azure-identity
       - azure-keyvault-secrets
+      - azure-storage-blob
+      - xgboost_ray
       - adlfs
       - azure-storage-blob
       - smart_open[azure]
       - https://s3-us-west-2.amazonaws.com/ray-wheels/latest/ray-3.0.0.dev0-cp310-cp310-manylinux2014_x86_64.whl
+  - pip:
+    - --extra-index-url https://download.pytorch.org/whl/cu118
+    - torch
+    - torchvision
+    - torchaudio
