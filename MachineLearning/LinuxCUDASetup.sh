@@ -65,17 +65,17 @@ wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 sudo ./Miniconda3-latest-Linux-x86_64.sh
 
 # create env; ready for SoTA training with peft, deepspeed, and bnb
-conda create --name ml python=3.8
+conda create --name ml python=3.10
 conda activate ml
 conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
-pip install deepspeed accelerate sentencepiece evaluate ninja peft mpi4py --upgrade
-pip install bitsandbytes
-
+pip install pip deepspeed accelerate sentencepiece evaluate ninja peft mpi4py bitsandbytes jupyter --upgrade
+git clone https://github.com/NVIDIA/apex
+cd apex
+pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" ./
 
 
 # add env to kernel list in azureml
-pip install jupyter
 python -m ipykernel install --user --name my_ml
 
 
