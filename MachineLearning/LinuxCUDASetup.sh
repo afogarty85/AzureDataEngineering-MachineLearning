@@ -69,7 +69,7 @@ conda create --name ml python=3.10
 conda activate ml
 conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
 conda install -c conda-forge pandas numpy transformers cudnn scikit-learn
-pip install pip deepspeed accelerate sentencepiece evaluate ninja peft mpi4py bitsandbytes jupyter --upgrade
+pip install pip deepspeed accelerate sentencepiece evaluate ninja peft mpi4py bitsandbytes jupyter pyarrow --upgrade
 git clone https://github.com/NVIDIA/apex
 cd apex
 pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" ./
