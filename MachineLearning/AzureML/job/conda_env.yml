@@ -1,0 +1,23 @@
+name: my_ml_env
+channels:
+  - conda-forge
+  - anaconda
+dependencies:
+  - python==3.10
+  - pip==23.0.1
+  - pip:
+      - scikit-learn
+      - numpy
+      - pyarrow
+      - pandas
+      - azure-identity
+      - azure-keyvault-secrets
+      - deepspeed
+      - transformers
+      - accelerate
+      - datasets
+      - peft
+      - evaluate
+      - azure-ai-ml
+      - azureml-core
+      - sentencepiece
