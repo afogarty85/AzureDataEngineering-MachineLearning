@@ -1,0 +1,5 @@
+# local runs
+sudo docker build -t local_image:v1 .
+sudo docker run -it -p 8000:8000 local_image:v1
+
+

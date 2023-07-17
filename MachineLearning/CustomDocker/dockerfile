@@ -1,0 +1,82 @@
+FROM ubuntu:20.04
+USER root
+
+# non-interactive installs
+ENV DEBIAN_FRONTEND=noninteractive
+
+# install FreeTDS and dependencies
+RUN apt-get update \
+ && apt-get install unixodbc -y \
+ && apt-get install curl -y \
+ && apt-get install unixodbc-dev -y \
+ && apt-get install freetds-dev -y \
+ && apt-get install freetds-bin -y \
+ && apt-get install tdsodbc -y \
+ && apt-get install wget -y \
+ && apt-get install gcc -y \
+ && apt-get install git -y \
+ && apt-get install python3 -y \
+ && apt-get install python3-pip -y \
+ && apt-get install --reinstall build-essential -y
+
+# set os / arch given above
+ARG OS=ubuntu2004
+ARG arch=x86_64
+
+# headers
+RUN apt-get install linux-headers-$(${OS})
+
+# cuda 11.7 toolkit network install; if WSL -- do not install drivers, you get drivers through windows
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/${OS}/${arch}/cuda-ubuntu2004.pin
+RUN mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600
+RUN wget https://developer.download.nvidia.com/compute/cuda/11.7.0/local_installers/cuda-repo-${OS}-11-7-local_11.7.0-515.43.04-1_amd64.deb
+RUN dpkg -i cuda-repo-ubuntu2004-11-7-local_11.7.0-515.43.04-1_amd64.deb
+RUN cp /var/cuda-repo-ubuntu2004-11-7-local/cuda-*-keyring.gpg /usr/share/keyrings/
+RUN apt-get update
+RUN apt-get -y install cuda
+
+# post install
+RUN export PATH=/usr/local/cuda-11.7/bin${PATH:+:${PATH}}
+RUN export LD_LIBRARY_PATH=/usr/local/cuda-11.7/lib64\${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+
+# populate "ocbcinst.ini"
+RUN echo "[FreeTDS]\n\
+Description = FreeTDS unixODBC Driver\n\
+Driver = /usr/lib/x86_64-linux-gnu/odbc/libtdsodbc.so\n\
+Setup = /usr/lib/x86_64-linux-gnu/odbc/libtdsS.so" >> /etc/odbcinst.ini
+
+# Add SQL Server ODBC Driver 17 for Ubuntu 20.
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+RUN curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
+RUN apt-get update
+RUN ACCEPT_EULA=Y apt-get install -y --allow-unauthenticated msodbcsql17
+RUN ACCEPT_EULA=Y apt-get install -y --allow-unauthenticated mssql-tools
+RUN echo 'export PATH="$PATH:/opt/mssql-tools/bin"' >> ~/.bash_profile
+RUN echo 'export PATH="$PATH:/opt/mssql-tools/bin"' >> ~/.bashrc
+
+# update linux
+RUN apt update -y && sudo apt full-upgrade -y && sudo apt autoremove -y && sudo apt clean -y && sudo apt autoclean -y
+RUN apt update -y
+RUN apt-get install -y libopenmpi-dev
+
+# install miniconda
+ENV PATH="/root/miniconda3/bin:$PATH"
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+RUN mkdir /root/.conda && bash Miniconda3-latest-Linux-x86_64.sh -b
+
+# add env yml
+ADD env.yml ./root/.conda
+
+# add apex
+RUN git clone https://github.com/NVIDIA/apex
+
+# create conda environment with apex
+RUN conda init bash \
+    && . ~/.bashrc \
+    && conda env create --file /root/.conda/env.yml \
+    && conda activate my_ml_env \
+    && pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" ./apex
+
+
+# entrypoint
+CMD ["/bin/sh"]
