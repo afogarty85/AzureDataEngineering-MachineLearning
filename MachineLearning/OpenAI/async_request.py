@@ -72,3 +72,23 @@ for i, batch in enumerate(prompt_list):
     out = loop.run_until_complete(async_main_request(semaphore=64, prompt_list=batch, headers=headers))
     batch_set.append(out)
 
+
+
+# non async request
+import requests
+post_data = {
+    "prompt": prompt,
+    "temperature": 0.3,
+    "max_tokens": 128,
+    "top_p": 1.0,
+    "frequency_penalty": 0,
+    "presence_penalty": 0,
+    "best_of": 1,
+}
+
+resp = requests.post(url="https://cxod-devlab-openai-scus.openai.azure.com/openai/deployments/davinci_mine/completions?api-version=2022-12-01",
+              headers=headers,
+              data=json.dumps(post_data)
+              )
+
+resp.json()['choices'][0]['text']
