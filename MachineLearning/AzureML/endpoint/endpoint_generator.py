@@ -29,23 +29,19 @@ endpoint_name = ""
 endpoint = ManagedOnlineEndpoint(
     name = endpoint_name, 
     description="",
-    auth_mode="aml_token"
+    auth_mode="key",
+    traffic={'blue': 100}
 )
 
-# set traffic to 100%
-endpoint.traffic = {"blue": 100}
 
 # update
 ml_client.online_endpoints.begin_create_or_update(endpoint).result()
 
 
-# location of trained model
-model = Model(path="../train_data/xgboost_trained.json")
-
 # set env
 env = Environment(
     conda_file="../train_data/conda.yml",
-    image="mcr.microsoft.com/azureml/minimal-ubuntu20.04-py38-cpu-inference:latest",
+    image="pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime",
 )
 
 # init deployment

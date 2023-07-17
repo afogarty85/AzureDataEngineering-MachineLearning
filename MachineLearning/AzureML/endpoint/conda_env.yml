@@ -1,0 +1,26 @@
+name: my_ml_env
+channels:
+  - defaults
+dependencies:
+  - python==3.9
+  - pip==23.0.1
+  - cudatoolkit==11.8
+  - pip:
+      - --index-url https://pypi.python.org/simple
+      - --extra-index-url https://download.pytorch.org/whl/cu118
+      - torch==2.0.1+cu118
+      - torchvision
+      - torchaudio      
+      - azureml-mlflow
+      - azureml-defaults
+      - azureml-inference-server-http==0.8.4
+      - scikit-learn
+      - numpy
+      - pyarrow
+      - pandas
+      - azure-identity
+      - azure-keyvault-secrets
+      - azure-storage-blob
+      - azure-kusto-data
+      - sentence_transformers
+      - transformers
