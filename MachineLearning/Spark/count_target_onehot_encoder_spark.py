@@ -191,3 +191,7 @@ for col in one_hot_cols:
 
     test =  test.withColumn(col + '_arr', vector_to_array(col + '_OH')) \
                 .select('*', *[F.col(col + '_arr')[i].cast('tinyint').alias(col + f'_arr_{i}') for i in range( test.schema[col + '_OH'].metadata["ml_attr"]["num_attrs"] )])
+
+
+# drop udt and array cols
+drop_col_set = [f.name for f in train.schema.fields if isinstance(f.dataType, ArrayType) or isinstance(f.dataType, VectorUDT)]
