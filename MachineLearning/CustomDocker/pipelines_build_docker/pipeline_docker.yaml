@@ -1,0 +1,38 @@
+trigger:
+  branches:
+    include:
+    - main
+stages:
+- stage: __default
+  jobs:
+  - job: Job
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Bash@3
+      displayName: Login to AZ
+      inputs:
+        targetType: inline
+        # login to Azure and Azure Container Registry
+        script: |
+          az login --service-principal --username $(client_id) --password $(secret_id)  --tenant $(tenant_id)
+          az acr login --name chienpimoad
+      env:
+        # service principal with ACRPush and Contributor access policy (IAM)
+        client_id: $(client_id)
+        secret_id: $(secret_id)
+        tenant_id: $(tenant_id)
+
+    - task: Bash@3
+      displayName: Docker build image
+      inputs:
+        targetType: inline
+        # build / deploy image
+        script: |
+          docker build --secret id=sas_url -t kingsgate:v2 . \
+          && docker tag kingsgate:v2 chienpimoad.azurecr.io/kingsgate:v2 \
+          && docker push chienpimoad.azurecr.io/kingsgate:v2
+      env:
+        # SAS token assigned to file to wget
+        sas_url: $(sas_url)
+        DOCKER_BUILDKIT: 1

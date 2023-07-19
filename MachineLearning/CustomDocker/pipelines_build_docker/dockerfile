@@ -1,0 +1,30 @@
+FROM mcr.microsoft.com/azureml/minimal-ubuntu20.04-py38-cpu-inference:latest
+USER root
+
+# some basic apps
+RUN apt-get -y update && apt -y update
+RUN apt-get install -y python3.8-tk tcl-dev tk-dev wget curl ninja-build cmake apt-transport-https
+
+# create folder and cd to folder
+RUN mkdir -p /code
+
+# change the working directory for subsequent commands
+WORKDIR /code
+
+# get latest training file and write to kingsgate.parquet in /code
+RUN --mount=type=secret,id=sas_url,dst=/sas_url \
+	wget `cat /sas_url` -k -O "kingsgate.parquet" 
+
+ADD ./requirements.txt /code/
+RUN pip install -r requirements.txt --no-cache-dir
+ADD . /code
+
+# expose some ports
+EXPOSE 8000
+EXPOSE 5000
+EXPOSE 7860
+EXPOSE 8888
+EXPOSE 8181
+
+# run the app
+CMD python app.py
