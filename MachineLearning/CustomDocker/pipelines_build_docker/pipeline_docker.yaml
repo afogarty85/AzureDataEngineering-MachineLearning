@@ -36,3 +36,16 @@ stages:
         # SAS token assigned to file to wget
         sas_url: $(sas_url)
         DOCKER_BUILDKIT: 1
+
+    - task: Bash@3
+      displayName: Reboot WebApp
+      inputs:
+        targetType: inline
+        script: |
+          sleep 60
+          az login --service-principal --username $(client_id) --password $(secret_id)  --tenant $(tenant_id)
+          az webapp restart --name kingsgate --resource-group rg_moad_dev
+      env:
+        client_id: $(client_id)
+        secret_id: $(secret_id)
+        tenant_id: $(tenant_id)
