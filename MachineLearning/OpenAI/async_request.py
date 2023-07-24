@@ -73,6 +73,8 @@ for i, batch in enumerate(prompt_list):
     batch_set.append(out)
 
 
+# collapse
+pd.json_normalize(pd.concat([pd.json_normalize(_)['choices'].explode() for _ in batch_results]).reset_index(drop=True))['text'].to_frame()
 
 # non async request
 import requests
