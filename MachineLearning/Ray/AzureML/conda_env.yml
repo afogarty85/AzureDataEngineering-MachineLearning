@@ -1,0 +1,20 @@
+name: my_ml
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - pip==23.0.1
+  - cudatoolkit==11.8
+  - pip:
+      - --index-url https://pypi.python.org/simple
+      - --extra-index-url https://download.pytorch.org/whl/cu118
+      - torch==2.0.1+cu118
+      - torchvision
+      - torchaudio
+      - scikit-learn
+      - numpy
+      - pyarrow==11.0.0
+      - psutil
+      - pandas
+      - azureml-core
+      - ray[air]
