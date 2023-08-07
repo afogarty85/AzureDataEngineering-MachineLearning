@@ -320,7 +320,6 @@ trainer = TorchTrainer(
     dataset_config={"train": DatasetConfig(fit=True,  # fit() on train only; transform all
                                         split=True,  # split data acrosss workers if num_workers > 1
                                         global_shuffle=False,  # local shuffle
-                                        transform=False,
                                         max_object_store_memory_fraction=0.45,  # stream mode; % of available object store memory
                                         ),
                     },
