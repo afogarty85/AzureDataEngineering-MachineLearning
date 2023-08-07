@@ -37,7 +37,7 @@ ctx.execution_options.locality_with_output = False
 ctx.execution_options.preserve_order = False
 ctx.execution_options.resource_limits.cpu = num_cpus
 ctx.execution_options.resource_limits.gpu = 4
-ctx.execution_options.resource_limits.object_store_memory = 20e9
+ctx.execution_options.resource_limits.object_store_memory = 50e9
 ctx.execution_options.verbose_progress = True
 
 
@@ -53,16 +53,18 @@ train_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
                             use_threads=True,
                             parallelism=num_partitions*2,
                             filter=pc.field('test_split').isin(['train']),   
-                            ).drop_columns(['test_split']).repartition(num_partitions)
+                            ).drop_columns(['test_split']) \
+                            .repartition(200) \
+                            .window(bytes_per_window=1e+9).repeat()
 
 valid_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
                             use_threads=True,
                             parallelism=num_partitions*2,
                             filter=pc.field('test_split').isin(['valid']),   
-                            ).drop_columns(['test_split']).repartition(num_partitions)
+                            ).drop_columns(['test_split']) \
+                            .repartition(200) \
+                            .window(bytes_per_window=1e+9).repeat()
 
-# print count
-print(f"Retrieved a data set with this many rows: {train_set.count()}")
 
 # model
 class ConcatenatedEmbeddings(torch.nn.Module):
@@ -177,22 +179,13 @@ class MLP(torch.nn.Module):
         return x
 
 
-# get list of columns
-col_set = valid_set.columns()
-
-# get features
-feature_set = [x for x in col_set if x not in  ['SYNDROME', 'INPUT__YML__testname'] ]
-
-# get num features
-num_features = len(feature_set)
-
 # set model params
 EMBEDDING_TABLE_SHAPES = {'INPUT__YML__testname': (523, 50)}  # (max_val, n_features) -- max_val needs to be count(distinct(val)) +1 we can encounter
 NUM_CLASSES = 51
 EMBEDDING_DROPOUT_RATE = 0.04
 DROPOUT_RATES = [0.001, 0.01]
 HIDDEN_DIMS = [500, 500]
-NUM_CONTINUOUS = num_features
+NUM_CONTINUOUS = 18
 
 # Create a preprocessor to concatenate
 preprocessor = Concatenator(exclude=["SYNDROME", "INPUT__YML__testname"], dtype=np.float32)
@@ -245,7 +238,7 @@ def train_loop_per_worker(config: dict):
         for batch in train_shard.iter_torch_batches(batch_size=batch_size,
                                                     device='cuda',
                                                     dtypes=torch.float32,
-                                                    local_shuffle_buffer_size=10000,
+                                                    local_shuffle_buffer_size=50000,
                                                     prefetch_batches=8,  # num_workers
                                                     drop_last=True):
             
@@ -322,11 +315,12 @@ trainer = TorchTrainer(
     train_loop_per_worker=train_loop_per_worker,
     train_loop_config={"lr": 0.001, "batch_size": 1024*4, "num_epochs": 10},
     datasets={"train": train_set, "valid": valid_set},
-    scaling_config=ScalingConfig(num_workers=4, use_gpu=True, _max_cpu_fraction_per_node=0.9, resources_per_worker={"GPU": 1, "CPU": 5}),  # if use_gpu=True, num_workers = num GPUs
+    scaling_config=ScalingConfig(num_workers=4, use_gpu=True, _max_cpu_fraction_per_node=0.8, resources_per_worker={"GPU": 1, "CPU": 5}),  # if use_gpu=True, num_workers = num GPUs
     run_config=RunConfig(checkpoint_config=checkpoint_config),
     dataset_config={"train": DatasetConfig(fit=True,  # fit() on train only; transform all
                                         split=True,  # split data acrosss workers if num_workers > 1
                                         global_shuffle=False,  # local shuffle
+                                        transform=False,
                                         max_object_store_memory_fraction=0.45,  # stream mode; % of available object store memory
                                         ),
                     },
