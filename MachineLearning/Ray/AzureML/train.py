@@ -16,6 +16,7 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 import psutil
+import pandas as pd
 from sklearn.metrics import f1_score
 
 
@@ -32,15 +33,11 @@ if not ray.is_initialized():
 
 
 # set data context
-ctx = ray.data.context.DatasetContext.get_current()
+ctx = ray.data.DataContext.get_current()
+ctx.use_push_based_shuffle = True
 ctx.use_streaming_executor = True
-ctx.execution_options.locality_with_output = False
-ctx.execution_options.preserve_order = False
-ctx.execution_options.resource_limits.cpu = num_cpus
-ctx.execution_options.resource_limits.gpu = 4
-ctx.execution_options.resource_limits.object_store_memory = 50e9
+ctx.execution_options.locality_with_output = True
 ctx.execution_options.verbose_progress = True
-
 
 # cluster available resources which can change dynamically
 print(f"Ray cluster resources_ {ray.cluster_resources()}")
@@ -162,28 +159,29 @@ class MLP(torch.nn.Module):
         return x
 
 
+# load data from input -- run.input_datasets['RandomizedTest'] is a locally mounted path... /mnt/..; faster than abfs route
+print(f'Getting data...')
+train_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
+                            use_threads=True,
+                            filter=pc.field('test_split').isin(['train']),   
+                            ) \
+                            .drop_columns(['test_split'])
+                            
+valid_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
+                            use_threads=True,
+                            filter=pc.field('test_split').isin(['valid']),   
+                            ).drop_columns(['test_split'])
+
+# num cols
+continuous_features = [c for c in valid_set.columns() if c not in ['test_split', 'SYNDROME', 'INPUT__YML__testname']]
+
 # set model params
 EMBEDDING_TABLE_SHAPES = {'INPUT__YML__testname': (523, 50)}  # (max_val, n_features) -- max_val needs to be count(distinct(val)) +1 we can encounter
 NUM_CLASSES = 51
 EMBEDDING_DROPOUT_RATE = 0.04
 DROPOUT_RATES = [0.001, 0.01]
 HIDDEN_DIMS = [500, 500]
-NUM_CONTINUOUS = 18
-
-
-
-# load data from input -- run.input_datasets['RandomizedTest'] is a locally mounted path... /mnt/..; faster than abfs route
-print(f'Getting data...')
-train_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
-                            use_threads=True,
-                            filter=pc.field('test_split').isin(['train']),   
-                            ).drop_columns(['test_split'])
-
-valid_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
-                            use_threads=True,
-                            filter=pc.field('test_split').isin(['valid']),   
-                            ).drop_columns(['test_split'])
-
+NUM_CONTINUOUS = len(continuous_features)
 
 # Create a preprocessor to concatenate
 preprocessor = Concatenator(exclude=["SYNDROME", "INPUT__YML__testname"], dtype=np.float32, output_column_name=['x_cont'])
@@ -219,7 +217,7 @@ def train_loop_per_worker(config: dict):
                                     )
 
     # optim
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=0.01)
     optimizer = train.torch.prepare_optimizer(optimizer)
 
     # loss fn
@@ -239,7 +237,7 @@ def train_loop_per_worker(config: dict):
         # torch dataloader replacement
         for batch in train_shard.iter_torch_batches(
             batch_size=batch_size,
-            prefetch_batches=5,
+            prefetch_batches=2,
             local_shuffle_buffer_size=10000,
             device="cuda",
             dtypes={
@@ -265,7 +263,8 @@ def train_loop_per_worker(config: dict):
             total_loss += loss.detach().float().item()
             completed_steps += 1
 
-        session.report({"loss": (total_loss / completed_steps), "epoch": epoch + 1, "split": "train", 'F1': np.nan},
+        print(f"Epoch {epoch} | Loss {(total_loss / completed_steps)}")
+        session.report({"loss": (total_loss / completed_steps), "epoch": epoch, "split": "train", 'F1': np.nan},
                        checkpoint=Checkpoint.from_dict(dict(epoch=epoch, model=model.state_dict())),)
 
 
@@ -276,15 +275,18 @@ checkpoint_config = CheckpointConfig(
     checkpoint_score_order="min"
 )
 
-# trainer
+# trainer -- has 24 cores total; training should use 20 cores + 1 for trainer
 trainer = TorchTrainer(
     train_loop_per_worker=train_loop_per_worker,
-    train_loop_config={"lr": 0.001, "batch_size": 1024, "num_epochs": 1},
+    train_loop_config={"lr": 0.001, "batch_size": 1024*4, "num_epochs": 1},
     datasets={"train": train_set},
-    scaling_config=ScalingConfig(num_workers=4, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 5}, trainer_resources={"CPU": 1}),  # if use_gpu=True, num_workers = num GPUs
+    scaling_config=ScalingConfig(num_workers=4, use_gpu=True, resources_per_worker={"CPU": 5, "GPU": 1}, trainer_resources={"CPU": 1,} ),  # if use_gpu=True, num_workers = num GPUs
     run_config=RunConfig(checkpoint_config=checkpoint_config),
     dataset_config=DataConfig(datasets_to_split=["train"]),
 )
+
+
+print(f"Starting to train with a dataset of size: {train_set.count()}!")
 
 # fit
 result = trainer.fit()
@@ -299,11 +301,72 @@ best_state_dict = result.get_best_checkpoint(metric='loss', mode='min').to_dict(
 with open(aml_context.output_datasets['output1'] + '/best_ckpt.pickle', 'wb') as handle:
     pickle.dump(best_state_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-
-
 print("Training complete!")
 
 
 
+print("Evaluating...")
 
+# init model
+model = MLP(embedding_table_shapes=EMBEDDING_TABLE_SHAPES,
+        num_continuous=NUM_CONTINUOUS,
+        emb_dropout=EMBEDDING_DROPOUT_RATE,
+        layer_hidden_dims=HIDDEN_DIMS,
+        layer_dropout_rates=DROPOUT_RATES,
+        num_classes=NUM_CLASSES
+        )
+
+class TorchPredictor:
+    def __init__(self, model, state_dict):
+        self.model = model.cuda()
+        self.model.load_state_dict(state_dict)
+        self.model.eval()
+
+    def __call__(self, batch):
+        # transform to tensor / attach to GPU
+        x_cont = torch.as_tensor(batch["x_cont"], dtype=torch.float32, device="cuda")
+        x_cat = torch.as_tensor(batch["x_cat"], dtype=torch.int64, device="cuda")
+        labels = torch.as_tensor(batch["SYNDROME"], dtype=torch.int64, device="cuda")
+
+        # like no_grad
+        with torch.inference_mode():
+            # forward and back to cpu
+            logits = self.model(x_cat=x_cat, x_cont=x_cont)
+            _, predicted_labels = torch.max(logits, dim=1)
+
+            yield {
+                    "y_pred": predicted_labels.cpu().numpy(),
+                    "y_true": labels.cpu().numpy(),
+                    }
+
+
+def transform_df(df: pd.DataFrame) -> pd.DataFrame:
+    df['x_cont'] = df["x_cont"]
+    df['x_cat'] = df['INPUT__YML__testname'].astype(np.int64)
+    return df[['x_cat', 'x_cont', 'SYNDROME']]
+
+
+# transform
+valid_set = valid_set.map_batches(
+                    transform_df,
+                    batch_format="pandas",
+                    )
+
+# map against calibration_set
+out = valid_set.map_batches(TorchPredictor(model=model,
+                             state_dict=best_state_dict),
+                             compute=ray.data.ActorPoolStrategy(size=4),
+                             num_gpus=1,
+                             batch_size=1024,
+                             )
+
+# score batch
+score_store = []
+for batch in out.iter_batches(batch_size=1024):
+    score_store.append(f1_score(y_true=batch['y_pred'], y_pred=batch['y_true'], average='weighted'))
+
+# avg
+avg_f1 = np.mean(score_store)
+
+print(f"F1 Score: {avg_f1}")
 
