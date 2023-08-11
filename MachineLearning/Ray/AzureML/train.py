@@ -7,6 +7,7 @@ from ray import train, tune
 from ray.air import session, Checkpoint
 from ray.air.config import ScalingConfig, DatasetConfig, RunConfig, CheckpointConfig
 from ray.train.torch import TorchTrainer
+from ray.train import DataConfig
 from ray.data.preprocessors import Chain, BatchMapper, Concatenator, StandardScaler, MinMaxScaler
 from ray.tune.tuner import Tuner, TuneConfig
 from ray.tune.schedulers import ASHAScheduler
@@ -15,7 +16,7 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 import psutil
-
+from sklearn.metrics import f1_score
 
 
 # repartition for parallel
@@ -46,24 +47,6 @@ print(f"Ray cluster resources_ {ray.cluster_resources()}")
 
 # init Azure ML run context data
 aml_context = Run.get_context()
-
-# load data from input -- run.input_datasets['RandomizedTest'] is a locally mounted path... /mnt/..; faster than abfs route
-print(f'Getting data...')
-train_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
-                            use_threads=True,
-                            parallelism=num_partitions*2,
-                            filter=pc.field('test_split').isin(['train']),   
-                            ).drop_columns(['test_split']) \
-                            .repartition(200) \
-                            .window(bytes_per_window=1e+9).repeat()
-
-valid_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
-                            use_threads=True,
-                            parallelism=num_partitions*2,
-                            filter=pc.field('test_split').isin(['valid']),   
-                            ).drop_columns(['test_split']) \
-                            .repartition(200) \
-                            .window(bytes_per_window=1e+9).repeat()
 
 
 # model
@@ -187,13 +170,29 @@ DROPOUT_RATES = [0.001, 0.01]
 HIDDEN_DIMS = [500, 500]
 NUM_CONTINUOUS = 18
 
+
+
+# load data from input -- run.input_datasets['RandomizedTest'] is a locally mounted path... /mnt/..; faster than abfs route
+print(f'Getting data...')
+train_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
+                            use_threads=True,
+                            filter=pc.field('test_split').isin(['train']),   
+                            ).drop_columns(['test_split'])
+
+valid_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
+                            use_threads=True,
+                            filter=pc.field('test_split').isin(['valid']),   
+                            ).drop_columns(['test_split'])
+
+
 # Create a preprocessor to concatenate
-preprocessor = Concatenator(exclude=["SYNDROME", "INPUT__YML__testname"], dtype=np.float32)
+preprocessor = Concatenator(exclude=["SYNDROME", "INPUT__YML__testname"], dtype=np.float32, output_column_name=['x_cont'])
 
 # apply preprocessor
 train_set = preprocessor.fit_transform(train_set)
 valid_set = preprocessor.transform(valid_set)
 
+# train loop
 def train_loop_per_worker(config: dict):
 
     # set mixed
@@ -203,10 +202,6 @@ def train_loop_per_worker(config: dict):
     batch_size = config["batch_size"]
     lr = config["lr"]
     num_epochs = config["num_epochs"]
-
-    # get train/valid shard
-    train_shard = session.get_dataset_shard("train")
-    valid_shard = session.get_dataset_shard("valid")
 
     # init model
     model = MLP(embedding_table_shapes=EMBEDDING_TABLE_SHAPES,
@@ -230,82 +225,53 @@ def train_loop_per_worker(config: dict):
     # loss fn
     loss_fn = nn.CrossEntropyLoss()
 
-    for epoch in range(num_epochs):
+    # get shards
+    train_shard = session.get_dataset_shard("train")
+
+    for epoch in range(1, num_epochs + 1):
+
         # set train
         model.train()
 
-        # torch dataloader replacement
-        for batch in train_shard.iter_torch_batches(batch_size=batch_size,
-                                                    device='cuda',
-                                                    dtypes=torch.float32,
-                                                    local_shuffle_buffer_size=50000,
-                                                    prefetch_batches=8,  # num_workers
-                                                    drop_last=True):
-            
-            # unpack batch
-            x_cont, x_cat, labels = batch["concat_out"], batch['INPUT__YML__testname'].type(torch.LongTensor), batch["SYNDROME"].type(torch.LongTensor)
+        total_loss = 0.0
+        completed_steps = 0
 
-            # place back on device
-            x_cont = x_cont.cuda()
-            x_cat = x_cat.cuda()
-            labels = labels.cuda()
-            
+        # torch dataloader replacement
+        for batch in train_shard.iter_torch_batches(
+            batch_size=batch_size,
+            prefetch_batches=5,
+            local_shuffle_buffer_size=10000,
+            device="cuda",
+            dtypes={
+                "x_cont": torch.float32,
+                "INPUT__YML__testname": torch.long,
+                "SYNDROME": torch.long,
+            },
+            drop_last=True,
+        ):
+
             # forward
-            outputs = model(x_cat=x_cat, x_cont=x_cont)
+            outputs = model(x_cat=batch["INPUT__YML__testname"].cuda(), x_cont=batch["x_cont"].cuda())
 
             # loss
-            loss = loss_fn(outputs, labels)
+            loss = loss_fn(outputs, batch["SYNDROME"].cuda())
 
             # update
             train.torch.backward(loss)  # mixed prec loss
             optimizer.step()
             optimizer.zero_grad()
 
-        session.report({"loss": loss.item(), "epoch": epoch + 1, "split": "train", 'acc': np.nan})
-        
-        # eval loop
-        model.eval()
-        total_loss = 0
-        correct = 0
-        total_size = 0
-        steps = 0
-        for batches in valid_shard.iter_torch_batches(batch_size=batch_size*2,
-                                                    device='cuda',
-                                                    dtypes=torch.float32,
-                                                    prefetch_batches=8,  # num_workers
-                                                    drop_last=False):
-            
-            # unpack batch
-            x_cont, x_cat, labels = batch["concat_out"], batch['INPUT__YML__testname'].type(torch.LongTensor), batch["SYNDROME"].type(torch.LongTensor)
-
-            # place back on device
-            x_cont = x_cont.cuda()
-            x_cat = x_cat.cuda()
-            labels = labels.cuda()
-
-            # forward
-            outputs = model(x_cat=x_cat.cuda(), x_cont=x_cont.cuda())
-
-            # loss
-            loss = loss_fn(outputs, labels)
-            total_loss += loss.detach().float().item()
-
             # metrics
-            _, predicted_labels = torch.max(outputs, dim=1)
-            correct += (predicted_labels == labels).sum().item()
-            steps += 1
-            total_size += labels.size(0)
+            total_loss += loss.detach().float().item()
+            completed_steps += 1
 
-        session.report({"loss": (total_loss / steps),
-                        "acc": correct / total_size,
-                        "epoch": epoch + 1,
-                        "split": "val"},
-                        checkpoint=Checkpoint.from_dict(dict(epoch=epoch, model=model.state_dict())), )
+        session.report({"loss": (total_loss / completed_steps), "epoch": epoch + 1, "split": "train", 'F1': np.nan},
+                       checkpoint=Checkpoint.from_dict(dict(epoch=epoch, model=model.state_dict())),)
 
 
-# keep the 2 checkpoints with the smallest val_loss
+# keep the 1 checkpoint
 checkpoint_config = CheckpointConfig(
-    num_to_keep=2,
+    num_to_keep=1,
     checkpoint_score_attribute="loss",
     checkpoint_score_order="min"
 )
@@ -313,25 +279,31 @@ checkpoint_config = CheckpointConfig(
 # trainer
 trainer = TorchTrainer(
     train_loop_per_worker=train_loop_per_worker,
-    train_loop_config={"lr": 0.001, "batch_size": 1024*4, "num_epochs": 10},
-    datasets={"train": train_set, "valid": valid_set},
-    scaling_config=ScalingConfig(num_workers=4, use_gpu=True, _max_cpu_fraction_per_node=0.8, resources_per_worker={"GPU": 1, "CPU": 5}),  # if use_gpu=True, num_workers = num GPUs
+    train_loop_config={"lr": 0.001, "batch_size": 1024, "num_epochs": 1},
+    datasets={"train": train_set},
+    scaling_config=ScalingConfig(num_workers=4, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 5}, trainer_resources={"CPU": 1}),  # if use_gpu=True, num_workers = num GPUs
     run_config=RunConfig(checkpoint_config=checkpoint_config),
-    dataset_config={"train": DatasetConfig(fit=True,  # fit() on train only; transform all
-                                        split=True,  # split data acrosss workers if num_workers > 1
-                                        global_shuffle=False,  # local shuffle
-                                        max_object_store_memory_fraction=0.45,  # stream mode; % of available object store memory
-                                        ),
-                    },
+    dataset_config=DataConfig(datasets_to_split=["train"]),
 )
 
 # fit
 result = trainer.fit()
 
-# write output back to lake
-ckpt = Checkpoint.from_directory(result.best_checkpoints[1][0].to_directory());
-my_dict = ckpt.to_dict();
+# print results
+print(result.metrics['loss'])
 
+# get best state dict
+best_state_dict = result.get_best_checkpoint(metric='loss', mode='min').to_dict()['model']
+
+# write
 with open(aml_context.output_datasets['output1'] + '/best_ckpt.pickle', 'wb') as handle:
-    pickle.dump(my_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    pickle.dump(best_state_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+
+print("Training complete!")
+
+
+
+
 
