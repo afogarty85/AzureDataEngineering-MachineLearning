@@ -24,9 +24,14 @@ inputs={
 outputs={
     "out": Output(
         type="uri_folder",
-        path="azureml://datastores/moaddevlake/paths/RAW/History/ML/GDCOFill",
+        mode='rw_mount',
+        path="azureml://datastores/moaddevlake/paths/RAW/History/ML/GDCOFill/",
     ),
 }
+
+# to save from the py file, just
+# save_path = aml_context.output_datasets['out'] + f'/inference_{dating}.parquet'
+# out_sample.to_parquet(save_path)
 
 
 try:
