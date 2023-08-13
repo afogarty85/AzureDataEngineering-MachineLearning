@@ -21,7 +21,6 @@ from ray.train import DataConfig
 np.set_printoptions(suppress=True)
 
 
-
 if not ray.is_initialized():
     # init a driver
     ray.init(num_gpus=1)
@@ -37,7 +36,6 @@ ctx.execution_options.verbose_progress = True
 
 # cluster available resources which can change dynamically
 print(f"Ray cluster resources_ {ray.cluster_resources()}")
-
 
 
 # model
@@ -75,6 +73,7 @@ class ConcatenatedEmbeddings(torch.nn.Module):
         x = torch.cat(x, dim=1)
         x = self.dropout(x)
         return x
+
 
 class MLP(torch.nn.Module):
     """
@@ -156,17 +155,18 @@ class MLP(torch.nn.Module):
 # load data from input -- run.input_datasets['RandomizedTest'] is a locally mounted path... /mnt/..; faster than abfs route
 print(f'Getting data...')
 train_set = ray.data.read_parquet('data/RTEDistinct',
-                            use_threads=True,
-                            filter=pc.field('test_split').isin(['train']),   
-                            ) \
-                            .drop_columns(['test_split'])
-                            
+                                  use_threads=True,
+                                  filter=pc.field('test_split').isin(['valid']),
+                                  ) \
+    .drop_columns(['test_split'])
+
 
 # num cols
 continuous_features = [c for c in train_set.columns() if c not in ['test_split', 'SYNDROME', 'INPUT__YML__testname']]
 
 # set model params
-EMBEDDING_TABLE_SHAPES = {'INPUT__YML__testname': (523, 50)}  # (max_val, n_features) -- max_val needs to be count(distinct(val)) +1 we can encounter
+# (max_val, n_features) -- max_val needs to be count(distinct(val)) +1 we can encounter
+EMBEDDING_TABLE_SHAPES = {'INPUT__YML__testname': (523, 50)}
 NUM_CLASSES = 51
 EMBEDDING_DROPOUT_RATE = 0.04
 DROPOUT_RATES = [0.001, 0.01]
@@ -174,11 +174,12 @@ HIDDEN_DIMS = [500, 500]
 NUM_CONTINUOUS = len(continuous_features)
 
 # Create a preprocessor to concatenate
-preprocessor = Concatenator(exclude=["SYNDROME", "INPUT__YML__testname"], dtype=np.float32, output_column_name=['x_cont'])
+preprocessor = Concatenator(
+    exclude=["SYNDROME", "INPUT__YML__testname"],
+    dtype=np.float32, output_column_name=['x_cont'])
 
 # apply preprocessor
 train_set = preprocessor.fit_transform(train_set)
-
 
 
 # time function
@@ -202,6 +203,8 @@ def train_loop_per_worker(config: dict):
     batch_size = config["batch_size"]
     lr = config["lr"]
     num_epochs = config["num_epochs"]
+    DROPOUT_RATES = config['dropout_rates']
+    EMBEDDING_TABLE_SHAPES = config['EMBEDDING_TABLE_SHAPES']
 
     # init model
     model = MLP(embedding_table_shapes=EMBEDDING_TABLE_SHAPES,
@@ -210,13 +213,13 @@ def train_loop_per_worker(config: dict):
                 layer_hidden_dims=HIDDEN_DIMS,
                 layer_dropout_rates=DROPOUT_RATES,
                 num_classes=NUM_CLASSES
-        )
+                )
 
     # prepare model
     model = train.torch.prepare_model(model=model,
-                                    move_to_device=True,
-                                    parallel_strategy='ddp',  # ddp / fsdp / None
-                                    )
+                                      move_to_device=True,
+                                      parallel_strategy=None,  # ddp / fsdp / None
+                                      )
 
     # optim
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=0.01)
@@ -235,6 +238,8 @@ def train_loop_per_worker(config: dict):
 
         total_loss = 0.0
         completed_steps = 0
+        n_correct = 0
+        nb_examples = 0
 
         # torch dataloader replacement
         for i, batch in enumerate(train_shard.iter_torch_batches(
@@ -264,23 +269,29 @@ def train_loop_per_worker(config: dict):
             # metrics
             total_loss += loss.detach().float().item()
             completed_steps += 1
+            nb_examples += batch["SYNDROME"].size(0)
 
-        print(f"Epoch {epoch} | Loss {(total_loss / completed_steps)}")
-        session.report({"loss": (total_loss / completed_steps), "epoch": epoch, "split": "train", 'F1': np.nan},
+            # basic acc
+            pred = outputs.argmax(dim=1, keepdim=True)
+            n_correct += pred.eq(batch["SYNDROME"].view_as(pred)).sum().item()
+
+        print(f"Epoch {epoch} | Loss {(total_loss / completed_steps)} | Acc: {n_correct / nb_examples} ")
+        session.report({"loss": (total_loss / completed_steps),
+                        "epoch": epoch, "split": "train", 'acc': n_correct / nb_examples},
                        checkpoint=Checkpoint.from_dict(dict(epoch=epoch, model=model.state_dict())),)
 
 
 # keep the 1 checkpoint
 checkpoint_config = CheckpointConfig(
     num_to_keep=1,
-    checkpoint_score_attribute="loss",
-    checkpoint_score_order="min"
+    checkpoint_score_attribute="acc",
+    checkpoint_score_order="max"
 )
 
 # trainer -- has 24 cores total; training should use 20 cores + 1 for trainer
 trainer = TorchTrainer(
     train_loop_per_worker=train_loop_per_worker,
-    train_loop_config={"lr": 0.001, "batch_size": 1024, "num_epochs": 5},
+    train_loop_config={"lr": 0.001, "batch_size": 1024, "num_epochs": 7, "dropout_rates": [0.001, 0.01], "EMBEDDING_TABLE_SHAPES": {'INPUT__YML__testname': (523, 50)}},
     datasets={"train": train_set},
     scaling_config=ScalingConfig(num_workers=1, use_gpu=True, ),  # if use_gpu=True, num_workers = num GPUs
     run_config=RunConfig(checkpoint_config=checkpoint_config),
@@ -290,30 +301,47 @@ trainer = TorchTrainer(
 
 # tune
 config = {
-        "lr": tune.loguniform(1e-4, 5e-1),
-        "batch_size": tune.choice([4, 8, 16, 32, 64, 128, 256, 512, 1024]),
-        "num_hidden": tune.choice([ [500, 500], [250, 250], [100, 100], [1000, 1000], [1000, 500] ]),
-    }
+    "lr": tune.loguniform(1e-4, 5e-1),
+    "EMBEDDING_TABLE_SHAPES": tune.choice(
+        [{'INPUT__YML__testname': (523, 25)},
+         {'INPUT__YML__testname': (523, 50)},
+         {'INPUT__YML__testname': (523, 100)},
+         {'INPUT__YML__testname': (523, 200)},
+         {'INPUT__YML__testname': (523, 500)}]),
+    "dropout_rates": tune.choice([[0.001, 0.01],
+                                  [0.01, 0.01],
+                                  [0.05, 0.01],
+                                  [0.05, 0.05],
+                                  [0.01, 0.01],]),
+    "batch_size": tune.choice([64, 128, 256, 512]),
+    "num_hidden": tune.choice(
+        [
+         [1000, 500],
+         [2000, 500],
+         [10000, 1000],
+         [5000, 500],
+         [2500, 1500],
+        ]), }
 
 scheduler = ASHAScheduler(
-        time_attr='training_iteration',
-        max_t=30,
-        grace_period=3,
-        reduction_factor=2,
-        brackets=1)
+    time_attr='training_iteration',
+    max_t=100,
+    grace_period=3,
+    reduction_factor=2,
+    brackets=1)
 
 
-resource_group = tune.PlacementGroupFactory([{"CPU": 4, "GPU": 1}])
+resource_group = tune.PlacementGroupFactory([{"CPU": 8, "GPU": 1}])
 trainable_with_resources = tune.with_resources(train_loop_per_worker, resource_group)
 
 tuner = Tuner(trainer,
               param_space={"train_loop_config": config},
-              tune_config=TuneConfig(num_samples=15,  # n trials
-                                        metric="loss",
-                                        mode="min",
-                                        scheduler=scheduler,
-                                        ),
-)
+              tune_config=TuneConfig(num_samples=25,  # n trials
+                                     metric="loss",
+                                     mode="min",
+                                     scheduler=scheduler,
+                                     ),
+              )
 
 # fit tune
 result_grid = tuner.fit()
@@ -322,4 +350,6 @@ result_grid = tuner.fit()
 result_grid.get_best_result()
 
 # returns a pandas dataframe of all reported results
-result.metrics_dataframe.query("split == 'val'").tail(3)
+col_set = ['loss', 'acc'] + result_grid.get_dataframe().filter(regex='config/train_loop').columns.tolist()
+result_grid.get_dataframe().query("split == 'train'").sort_values('loss', ascending=True).head()[col_set]
+
