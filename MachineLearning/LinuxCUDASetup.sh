@@ -35,6 +35,11 @@ export PATH=/usr/local/cuda-11.7/bin${PATH:+:${PATH}}
 export LD_LIBRARY_PATH=/usr/local/cuda-11.7/lib64\${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 sudo reboot
 
+# might need symlink
+sudo ln -s libcuda.so.1.1 libcuda.so.1
+sudo ln -s libcuda.so.1 libcuda.so
+sudo ldconfig
+
 # Tesla K80 Change Requirement, If K80:
 sudo apt-get purge nvidia-*
 sudo apt install libnvidia-common-470
