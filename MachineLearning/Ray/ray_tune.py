@@ -16,16 +16,22 @@ import numpy as np
 import torch.nn.functional as F
 import time
 import datetime
-from sklearn.metrics import f1_score
+import pickle
+import torchmetrics
 from ray.train import DataConfig
+from azureml.core import Run
+from sklearn.metrics import f1_score
 np.set_printoptions(suppress=True)
 
 
 if not ray.is_initialized():
     # init a driver
-    ray.init(num_gpus=1)
+    ray.init()
     print('ray initialized')
 
+
+# init Azure ML run context data
+aml_context = Run.get_context()
 
 # set data context
 ctx = ray.data.DataContext.get_current()
@@ -154,32 +160,46 @@ class MLP(torch.nn.Module):
 
 # load data from input -- run.input_datasets['RandomizedTest'] is a locally mounted path... /mnt/..; faster than abfs route
 print(f'Getting data...')
-train_set = ray.data.read_parquet('data/RTEDistinct',
+valid_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
                                   use_threads=True,
-                                  filter=pc.field('test_split').isin(['valid']),
-                                  ) \
-    .drop_columns(['test_split'])
+                                  filter=pc.field('test_split').isin(['valid'])) \
+                                .drop_columns(['test_split'])
 
 
-# num cols
-continuous_features = [c for c in train_set.columns() if c not in ['test_split', 'SYNDROME', 'INPUT__YML__testname']]
+# cat cols
+cat_cols = ['INPUT__REG__m_cmd_merge_mode_0_',
+            'INPUT__REG__m_cmd_merge_mode_1_',
+            'INPUT__REG__m_hazard_type',
+            'INPUT__YML__testname',
+            'INPUT__REG__m_ddr_speed_variant']
 
 # set model params
 # (max_val, n_features) -- max_val needs to be count(distinct(val)) +1 we can encounter
-EMBEDDING_TABLE_SHAPES = {'INPUT__YML__testname': (523, 50)}
-NUM_CLASSES = 51
-EMBEDDING_DROPOUT_RATE = 0.04
-DROPOUT_RATES = [0.001, 0.01]
-HIDDEN_DIMS = [500, 500]
-NUM_CONTINUOUS = len(continuous_features)
+EMBEDDING_TABLE_SHAPES = {
+    'INPUT__REG__m_cmd_merge_mode_0_': (5, 25),
+    'INPUT__REG__m_cmd_merge_mode_1_': (5, 25),
+    'INPUT__REG__m_hazard_type': (6, 25),
+    'INPUT__YML__testname': (523, 200),
+    'INPUT__REG__m_ddr_speed_variant': (6, 25),
+}
+
+NUM_CLASSES = 64
+EMBEDDING_DROPOUT_RATE = 0.01
+DROPOUT_RATES = [0.01, 0.01]
+HIDDEN_DIMS = [2000, 500]
+NUM_CONTINUOUS = 223
+num_epochs = 15
+batch_size = 512
+NUM_CONTINUOUS = 223
 
 # Create a preprocessor to concatenate
-preprocessor = Concatenator(
-    exclude=["SYNDROME", "INPUT__YML__testname"],
-    dtype=np.float32, output_column_name=['x_cont'])
+preprocessor = Chain(Concatenator(include=cat_cols, dtype=np.int32, output_column_name=['x_cat']),
+                     Concatenator(exclude=["SYNDROME", "x_cat"], dtype=np.float32, output_column_name=['x_cont'])
+                     )
+
 
 # apply preprocessor
-train_set = preprocessor.fit_transform(train_set)
+valid_set = preprocessor.fit_transform(valid_set)
 
 
 # time function
@@ -204,7 +224,7 @@ def train_loop_per_worker(config: dict):
     lr = config["lr"]
     num_epochs = config["num_epochs"]
     DROPOUT_RATES = config['dropout_rates']
-    EMBEDDING_TABLE_SHAPES = config['EMBEDDING_TABLE_SHAPES']
+    weight_decay = config['l2']
 
     # init model
     model = MLP(embedding_table_shapes=EMBEDDING_TABLE_SHAPES,
@@ -222,44 +242,65 @@ def train_loop_per_worker(config: dict):
                                       )
 
     # optim
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=0.01)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     optimizer = train.torch.prepare_optimizer(optimizer)
 
+    class_weights = np.array([1.72375779e-02, 5.57314565e-01, 1.21002182e+00, 1.62034115e+00,
+                        2.36676911e+00, 3.62426610e+00, 3.84672974e+00, 4.45735977e+00,
+                        5.32213965e+00, 7.40028374e+00, 7.82806709e+00, 1.42187537e+01,
+                        1.49731796e+01, 1.63186752e+01, 1.72847743e+01, 1.88530725e+01,
+                        2.04518930e+01, 2.33746636e+01, 2.35859651e+01, 2.38349488e+01,
+                        2.43925968e+01, 2.61111173e+01, 2.65006491e+01, 2.66611297e+01,
+                        3.63216200e+01, 3.86353830e+01, 3.89607498e+01, 3.89369453e+01,
+                        3.94485204e+01, 4.08506905e+01, 4.31440650e+01, 4.69279075e+01,
+                        5.01135105e+01, 5.11975083e+01, 5.19074699e+01, 6.61903806e+01,
+                        6.82569469e+01, 7.22725167e+01, 7.43618418e+01, 7.45837655e+01,
+                        8.92269221e+01, 1.01733006e+02, 1.06680223e+02, 1.07250250e+02,
+                        1.08816014e+02, 1.18349224e+02, 1.30170247e+02, 1.42075796e+02,
+                        1.55966957e+02, 1.57178686e+02, 1.65807463e+02, 1.77059383e+02,
+                        1.77651679e+02, 1.93188627e+02, 1.93540653e+02, 1.95905621e+02,
+                        2.02842678e+02, 2.07718704e+02, 2.09425233e+02, 2.15079644e+02,
+                        3.58526573e+02, 3.59487229e+02, 3.65623055e+02, 3.91931725e+02])
+    # create weights
+    class_weighting = torch.tensor(class_weights, dtype=torch.float16).cuda() / batch_size
+
     # loss fn
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss(weight=class_weighting)
 
     # get shards
-    train_shard = session.get_dataset_shard("train")
+    valid_shard = session.get_dataset_shard("valid")
 
     for epoch in range(1, num_epochs + 1):
 
         # set train
         model.train()
-
+        pred_storage = []
+        label_storage = []
         total_loss = 0.0
         completed_steps = 0
-        n_correct = 0
-        nb_examples = 0
+        mean_f1 = torchmetrics.MeanMetric().cuda()
+        sum_steps = torchmetrics.SumMetric().cuda()
+        
+        dataloader = valid_shard.iter_torch_batches(batch_size=batch_size,
+                                                    prefetch_batches=4,
+                                                    local_shuffle_buffer_size=5000,
+                                                    device="cuda",
+                                                    dtypes={"x_cont": torch.float32,
+                                                            "x_cat": torch.long,
+                                                            "SYNDROME": torch.long,},
+                                                    drop_last=True,)
 
         # torch dataloader replacement
-        for i, batch in enumerate(train_shard.iter_torch_batches(
-            batch_size=batch_size,
-            prefetch_batches=5,
-            local_shuffle_buffer_size=10000,
-            device="cuda",
-            dtypes={
-                "x_cont": torch.float32,
-                "INPUT__YML__testname": torch.long,
-                "SYNDROME": torch.long,
-            },
-            drop_last=True,
-        )):
+        for i, batch in enumerate(dataloader):
 
             # forward
-            outputs = model(x_cat=batch["INPUT__YML__testname"].cuda(), x_cont=batch["x_cont"].cuda())
+            outputs = model(x_cat=batch["x_cat"].cuda(), x_cont=batch["x_cont"].cuda())
+
+            # y
+            labels = batch["SYNDROME"].cuda()
 
             # loss
-            loss = loss_fn(outputs, batch["SYNDROME"].cuda())
+            loss = loss_fn(outputs, labels)
 
             # update
             train.torch.backward(loss)  # mixed prec loss
@@ -269,78 +310,95 @@ def train_loop_per_worker(config: dict):
             # metrics
             total_loss += loss.detach().float().item()
             completed_steps += 1
-            nb_examples += batch["SYNDROME"].size(0)
-
-            # basic acc
+            sum_steps.update(1)
+            
+            # preds
             pred = outputs.argmax(dim=1, keepdim=True)
-            n_correct += pred.eq(batch["SYNDROME"].view_as(pred)).sum().item()
 
-        print(f"Epoch {epoch} | Loss {(total_loss / completed_steps)} | Acc: {n_correct / nb_examples} ")
+            label_storage.append(labels.detach().cpu().numpy())
+            pred_storage.append(pred.detach().cpu().numpy())
+        
+        # compute f1 per worker
+        local_f1 = f1_score(np.concatenate(label_storage, axis=0), np.concatenate(pred_storage, axis=0), average='weighted')
+
+        # save f1 in aggregator
+        mean_f1.update(local_f1)
+
+        # compute
+        mean_f1_ddp = mean_f1.compute().item()
+        sum_steps_ddp = sum_steps.compute().item()
+
+        print(f"Epoch {epoch} | Loss {(total_loss / completed_steps)} | F1: {mean_f1_ddp} | Total Steps: {sum_steps_ddp} ")
         session.report({"loss": (total_loss / completed_steps),
-                        "epoch": epoch, "split": "train", 'acc': n_correct / nb_examples},
+                        "epoch": epoch,
+                        "split": "train",
+                        'F1': mean_f1_ddp},
                        checkpoint=Checkpoint.from_dict(dict(epoch=epoch, model=model.state_dict())),)
 
 
 # keep the 1 checkpoint
 checkpoint_config = CheckpointConfig(
     num_to_keep=1,
-    checkpoint_score_attribute="acc",
+    checkpoint_score_attribute="F1",
     checkpoint_score_order="max"
 )
 
 # trainer -- has 24 cores total; training should use 20 cores + 1 for trainer
 trainer = TorchTrainer(
     train_loop_per_worker=train_loop_per_worker,
-    train_loop_config={"lr": 0.001, "batch_size": 1024, "num_epochs": 7, "dropout_rates": [0.001, 0.01], "EMBEDDING_TABLE_SHAPES": {'INPUT__YML__testname': (523, 50)}},
-    datasets={"train": train_set},
-    scaling_config=ScalingConfig(num_workers=1, use_gpu=True, ),  # if use_gpu=True, num_workers = num GPUs
+    train_loop_config={"lr": 0.001, "batch_size": 1024, "num_epochs": 1, "dropout_rates": [0.001, 0.01], "l2": 0.01},
+    datasets={"valid": valid_set},
+    scaling_config=ScalingConfig(num_workers=1,
+                                 use_gpu=True,  # if use_gpu=True, num_workers = num GPUs
+                                 _max_cpu_fraction_per_node=0.8,
+                                resources_per_worker={"GPU": 1},
+                                trainer_resources={"CPU": 1}
+                                 ),  
     run_config=RunConfig(checkpoint_config=checkpoint_config),
-    dataset_config=DataConfig(datasets_to_split=["train"]),
+    dataset_config=DataConfig(datasets_to_split=["valid"]),
 )
 
 
 # tune
-config = {
+search_space = {
     "lr": tune.loguniform(1e-4, 5e-1),
-    "EMBEDDING_TABLE_SHAPES": tune.choice(
-        [{'INPUT__YML__testname': (523, 25)},
-         {'INPUT__YML__testname': (523, 50)},
-         {'INPUT__YML__testname': (523, 100)},
-         {'INPUT__YML__testname': (523, 200)},
-         {'INPUT__YML__testname': (523, 500)}]),
+    "l2": tune.choice([0.01, 0.05, 0.1, 0.001]),
     "dropout_rates": tune.choice([[0.001, 0.01],
                                   [0.01, 0.01],
                                   [0.05, 0.01],
                                   [0.05, 0.05],
                                   [0.01, 0.01],]),
-    "batch_size": tune.choice([64, 128, 256, 512]),
+    "batch_size": tune.choice([128, 256, 512, 1024]),
     "num_hidden": tune.choice(
         [
-         [1000, 500],
-         [2000, 500],
-         [10000, 1000],
-         [5000, 500],
-         [2500, 1500],
+            [250, 250],
+            [500, 250],
+            [1000, 500],
+            [2000, 1000],
+            [750, 500],
         ]), }
 
-scheduler = ASHAScheduler(
+asha_scheduler = ASHAScheduler(
     time_attr='training_iteration',
+    metric='F1',
+    mode='max',
     max_t=100,
-    grace_period=3,
-    reduction_factor=2,
-    brackets=1)
+    grace_period=10,
+    reduction_factor=3,
+    brackets=1,
+)
 
 
-resource_group = tune.PlacementGroupFactory([{"CPU": 8, "GPU": 1}])
-trainable_with_resources = tune.with_resources(train_loop_per_worker, resource_group)
-
-tuner = Tuner(trainer,
-              param_space={"train_loop_config": config},
+stopping_criteria = {"training_iteration": 1 }
+tuner = Tuner(trainable=trainer,
+              param_space={"train_loop_config": search_space},
               tune_config=TuneConfig(num_samples=25,  # n trials
-                                     metric="loss",
-                                     mode="min",
-                                     scheduler=scheduler,
+                                     scheduler=asha_scheduler,
                                      ),
+               run_config=RunConfig(storage_path="./results",
+                                    stop=stopping_criteria,
+                                    verbose=1,
+                                    name="asynchyperband_test")
               )
 
 # fit tune
@@ -350,6 +408,11 @@ result_grid = tuner.fit()
 result_grid.get_best_result()
 
 # returns a pandas dataframe of all reported results
-col_set = ['loss', 'acc'] + result_grid.get_dataframe().filter(regex='config/train_loop').columns.tolist()
-result_grid.get_dataframe().query("split == 'train'").sort_values('loss', ascending=True).head()[col_set]
+col_set = ['loss', 'F1'] + result_grid.get_dataframe().filter(regex='config/train_loop').columns.tolist()
 
+print(result_grid.get_dataframe().sort_values('F1', ascending=False).head()[col_set].head(5).to_dict())
+
+# write
+with open(aml_context.output_datasets['output1'] + '/best_df.pickle', 'wb') as handle:
+    pickle.dump(result_grid.get_dataframe(), handle, protocol=pickle.HIGHEST_PROTOCOL)
+# tensorboard --logdir=./results/my_experiment
