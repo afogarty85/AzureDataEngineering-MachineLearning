@@ -21,41 +21,26 @@ arch=x86_64
 # update gcc
 sudo apt install --reinstall gcc
 
-# cuda 11.7 toolkit network install; if WSL -- do not install drivers, you get drivers through windows
-wget https://developer.download.nvidia.com/compute/cuda/repos/${OS}/${arch}/cuda-ubuntu2004.pin
-sudo mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600
-wget https://developer.download.nvidia.com/compute/cuda/11.7.0/local_installers/cuda-repo-${OS}-11-7-local_11.7.0-515.43.04-1_amd64.deb
-sudo dpkg -i cuda-repo-ubuntu2004-11-7-local_11.7.0-515.43.04-1_amd64.deb
-sudo cp /var/cuda-repo-ubuntu2004-11-7-local/cuda-*-keyring.gpg /usr/share/keyrings/
-sudo apt-get update
-sudo apt-get -y install cuda
+# Install CUDA 11.7 and cudnn 8.5.0.96
+mkdir installspace
+cd /installspace && wget -q https://developer.download.nvidia.com/compute/cuda/11.7.0/local_installers/cuda_11.7.0_515.43.04_linux.run -O cuda_11.7.0_515.43.04_linux.run && \
+    sudo bash ./cuda_11.7.0_515.43.04_linux.run --toolkit --silent && \
+    rm -f cuda_11.7.0_515.43.04_linux.run
+cd /installspace && wget -q https://ossci-linux.s3.amazonaws.com/cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz -O cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz && \
+    tar xJf cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz && \
+    cd cudnn-linux-x86_64-8.5.0.96_cuda11-archive && \
+    sudo cp include/* /usr/local/cuda-11.7/include && \
+    sudo cp lib/* /usr/local/cuda-11.7/lib64 && \
+    sudo ldconfig && \
+    cd .. && rm -rf cudnn-linux-x86_64-8.5.0.96_cuda11-archive && rm -f cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz
 
 # post install
 export PATH=/usr/local/cuda-11.7/bin${PATH:+:${PATH}}
-export LD_LIBRARY_PATH=/usr/local/cuda-11.7/lib64\${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+export LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 sudo reboot
-
-# might need symlink
-sudo ln -s libcuda.so.1.1 libcuda.so.1
-sudo ln -s libcuda.so.1 libcuda.so
-sudo ldconfig
-
-# Tesla K80 Change Requirement, If K80:
-sudo apt-get purge nvidia-*
-sudo apt install libnvidia-common-470
-sudo apt install nvidia-driver-470
-sudo reboot
-
 
 # if WSL -- add these export paths to .bashrc with vim:
 sudo vim ~/.bashrc
-
-# set:
-export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
-export PATH=/usr/local/cuda-11.7bin:$PATH
-
-# for bitsandbytes and wsl
-export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
 
 # check install
 nvidia-smi
