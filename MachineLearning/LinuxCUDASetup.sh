@@ -34,10 +34,33 @@ cd /installspace && wget -q https://ossci-linux.s3.amazonaws.com/cudnn-linux-x86
     sudo ldconfig && \
     cd .. && rm -rf cudnn-linux-x86_64-8.5.0.96_cuda11-archive && rm -f cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz
 
+# Install CUDA CUDA 12.1 and cuDNN 8.8
+cd /installspace && mkdir tmp_cuda && cd tmp_cuda && \
+    wget -q https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda_12.1.0_530.30.02_linux.run && \
+    chmod +x cuda_12.1.0_530.30.02_linux.run && \
+    sudo ./cuda_12.1.0_530.30.02_linux.run --toolkit --silent && \
+    cd .. && \
+    rm -rf tmp_cuda && \
+    sudo ldconfig
+
+cd /installspace && mkdir tmp_cudnn && cd tmp_cudnn && \
+    wget -q https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/cudnn-linux-x86_64-8.8.1.3_cuda12-archive.tar.xz -O cudnn-linux-x86_64-8.8.1.3_cuda12-archive.tar.xz && \
+    tar xf cudnn-linux-x86_64-8.8.1.3_cuda12-archive.tar.xz && \
+    sudo cp -a cudnn-linux-x86_64-8.8.1.3_cuda12-archive/include/* /usr/local/cuda-12.1/include/ && \
+    sudo cp -a cudnn-linux-x86_64-8.8.1.3_cuda12-archive/lib/* /usr/local/cuda-12.1/lib64/ && \
+    cd .. && \
+    rm -rf tmp_cudnn && \
+    sudo ldconfig
+
 # post install
 export PATH=/usr/local/cuda-11.7/bin${PATH:+:${PATH}}
 export LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
-sudo reboot
+
+export CONDA_HOME=\${HOME}/miniconda3
+export CUDA_HOME=/usr/local/cuda
+
+export LD_LIBRARY_PATH=\${CUDA_HOME}/lib64\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}
+export LIBRARY_PATH=\${CUDA_HOME}/lib64\${LIBRARY_PATHPATH:+:\${LIBRARY_PATHPATH}}
 
 # if WSL -- add these export paths to .bashrc with vim:
 sudo vim ~/.bashrc
