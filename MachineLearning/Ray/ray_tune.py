@@ -6,10 +6,11 @@ import pyarrow.compute as pc
 from ray import train, tune
 from ray.air import session, Checkpoint
 from ray.air.config import ScalingConfig, DatasetConfig, RunConfig, CheckpointConfig
-from ray.train.torch import TorchTrainer, TorchCheckpoint
+from ray.train.torch import TorchTrainer, TorchCheckpoint, TorchConfig
 from ray.data.preprocessors import Chain, BatchMapper, Concatenator, StandardScaler
 from ray.tune.tuner import Tuner, TuneConfig
 from ray.tune.schedulers import ASHAScheduler
+from ray.tune.search.hyperopt import HyperOptSearch
 import torch
 import torch.nn as nn
 import numpy as np
@@ -22,6 +23,8 @@ from ray.train import DataConfig
 from azureml.core import Run
 from sklearn.metrics import f1_score
 np.set_printoptions(suppress=True)
+
+os.environ['RAY_DATA_DISABLE_PROGRESS_BARS'] = "1"
 
 
 if not ray.is_initialized():
@@ -38,7 +41,7 @@ ctx = ray.data.DataContext.get_current()
 ctx.use_push_based_shuffle = True
 ctx.use_streaming_executor = True
 ctx.execution_options.locality_with_output = True
-ctx.execution_options.verbose_progress = True
+ctx.execution_options.verbose_progress = False
 
 # cluster available resources which can change dynamically
 print(f"Ray cluster resources_ {ray.cluster_resources()}")
@@ -160,10 +163,18 @@ class MLP(torch.nn.Module):
 
 # load data from input -- run.input_datasets['RandomizedTest'] is a locally mounted path... /mnt/..; faster than abfs route
 print(f'Getting data...')
-valid_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
-                                  use_threads=True,
-                                  filter=pc.field('test_split').isin(['valid'])) \
-                                .drop_columns(['test_split'])
+train_set = ray.data.read_parquet(aml_context.input_datasets['RTE'],
+                            use_threads=True,
+                            filter=pc.field('test_split').isin(['train'])) \
+                            .drop_columns(['test_split'])
+
+# limit size of train set
+#_, train_set = train_set.train_test_split(0.3)
+
+valid_set = ray.data.read_parquet(aml_context.input_datasets['valid'],
+                            use_threads=True,
+                            filter=pc.field('test_split').isin(['valid']),   
+                            ).drop_columns(['test_split'])
 
 
 # cat cols
@@ -199,8 +210,12 @@ preprocessor = Chain(Concatenator(include=cat_cols, dtype=np.int32, output_colum
 
 
 # apply preprocessor
-valid_set = preprocessor.fit_transform(valid_set)
+train_set = preprocessor.fit_transform(train_set)
+valid_set = preprocessor.transform(valid_set)
 
+
+# set device
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # time function
 def format_time(elapsed):
@@ -223,8 +238,9 @@ def train_loop_per_worker(config: dict):
     batch_size = config["batch_size"]
     lr = config["lr"]
     num_epochs = config["num_epochs"]
-    DROPOUT_RATES = config['dropout_rates']
+    DROPOUT_RATES = list(config['dropout_rates'])
     weight_decay = config['l2']
+    HIDDEN_DIMS = list(config['num_hidden'])
 
     # init model
     model = MLP(embedding_table_shapes=EMBEDDING_TABLE_SHAPES,
@@ -238,7 +254,7 @@ def train_loop_per_worker(config: dict):
     # prepare model
     model = train.torch.prepare_model(model=model,
                                       move_to_device=True,
-                                      parallel_strategy=None,  # ddp / fsdp / None
+                                      parallel_strategy='ddp',  # ddp / fsdp / None
                                       )
 
     # optim
@@ -262,44 +278,46 @@ def train_loop_per_worker(config: dict):
                         2.02842678e+02, 2.07718704e+02, 2.09425233e+02, 2.15079644e+02,
                         3.58526573e+02, 3.59487229e+02, 3.65623055e+02, 3.91931725e+02])
     # create weights
-    class_weighting = torch.tensor(class_weights, dtype=torch.float16).cuda() / batch_size
+    class_weighting = torch.tensor(class_weights, dtype=torch.float16).to(device) / batch_size
 
     # loss fn
     loss_fn = nn.CrossEntropyLoss(weight=class_weighting)
 
     # get shards
+    train_shard = session.get_dataset_shard("train")
     valid_shard = session.get_dataset_shard("valid")
 
     for epoch in range(1, num_epochs + 1):
 
         # set train
         model.train()
-        pred_storage = []
-        label_storage = []
         total_loss = 0.0
         completed_steps = 0
-        mean_f1 = torchmetrics.MeanMetric().cuda()
-        sum_steps = torchmetrics.SumMetric().cuda()
-        
-        dataloader = valid_shard.iter_torch_batches(batch_size=batch_size,
-                                                    prefetch_batches=4,
-                                                    local_shuffle_buffer_size=5000,
-                                                    device="cuda",
-                                                    dtypes={"x_cont": torch.float32,
-                                                            "x_cat": torch.long,
-                                                            "SYNDROME": torch.long,},
-                                                    drop_last=True,)
+        sum_steps = torchmetrics.SumMetric().to(device)
+        sum_loss = torchmetrics.SumMetric().to(device)
+        cat_metric_preds = torchmetrics.CatMetric().to(device)
+        cat_metric_labels = torchmetrics.CatMetric().to(device)
+        t0 = time.time()
 
         # torch dataloader replacement
-        for i, batch in enumerate(dataloader):
+        for i, batch in enumerate(train_shard.iter_torch_batches(
+            batch_size=batch_size,
+            prefetch_batches=2,
+            local_shuffle_buffer_size=10000,
+            device="cuda",
+            dtypes={
+                    "x_cont": torch.float32,
+                    "x_cat": torch.long,
+                    "SYNDROME": torch.long,
+                },
+            drop_last=True,
+        )):
 
             # forward
-            outputs = model(x_cat=batch["x_cat"].cuda(), x_cont=batch["x_cont"].cuda())
-
-            # y
-            labels = batch["SYNDROME"].cuda()
+            outputs = model(x_cat=batch["x_cat"].to(device), x_cont=batch["x_cont"].to(device))
 
             # loss
+            labels = batch['SYNDROME'].to(device)
             loss = loss_fn(outputs, labels)
 
             # update
@@ -310,30 +328,107 @@ def train_loop_per_worker(config: dict):
             # metrics
             total_loss += loss.detach().float().item()
             completed_steps += 1
-            sum_steps.update(1)
-            
+
+            # update metrics
+            sum_loss.update(loss)
+            sum_steps.update(1)            
+
             # preds
-            pred = outputs.argmax(dim=1, keepdim=True)
+            preds = outputs.argmax(dim=1, keepdim=True)
 
-            label_storage.append(labels.detach().cpu().numpy())
-            pred_storage.append(pred.detach().cpu().numpy())
+            # update metrics
+            cat_metric_preds.update(preds)
+            cat_metric_labels.update(labels)
+
+            # report progress
+            if i % 100 == 0 and i != 0:
+                print(f"Training: Epoch: {epoch} | Step {i} | Loss: {(total_loss / completed_steps)} | Time: {time.time() - t0:.2f}")
+                # reset
+                t0 = time.time()
+
+        # compute metrics
+        ddp_steps = sum_steps.compute().item()
+        ddp_loss = sum_loss.compute().item()
+        ddp_preds = cat_metric_preds.compute()
+        ddp_labels = cat_metric_labels.compute()
+        f1 = torchmetrics.F1Score(task="multiclass", num_classes=64, average=None).to(device)
+        ddp_f1 = torch.mean(f1(ddp_preds.view(-1), ddp_labels, )).item()
+        avg_loss = (ddp_loss / ddp_steps)
+
+        print(f"Train: Epoch {epoch} Complete! | Loss: {avg_loss} | Total Steps: {ddp_steps} | Train F1: {ddp_f1} | LR: {lr}")
+
+        # evaluating
+        model.eval()
+
+        # torch dataloader replacement
+        for i, batch in enumerate(valid_shard.iter_torch_batches(
+            batch_size=batch_size*2,
+            prefetch_batches=2,
+            local_shuffle_buffer_size=10000,
+            device="cuda",
+            dtypes={
+                    "x_cont": torch.float32,
+                    "x_cat": torch.long,
+                    "SYNDROME": torch.long,
+                },
+            drop_last=True,
+        )):
+
+            with torch.no_grad():
+                
+                # forward
+                outputs = model(x_cat=batch["x_cat"].to(device), x_cont=batch["x_cont"].to(device))
+
+                # loss
+                labels = batch['SYNDROME'].to(device)
+                loss = loss_fn(outputs, labels)
+
+            # metrics
+            total_loss += loss.detach().float().item()
+            completed_steps += 1
+
+            # update metrics
+            sum_loss.update(loss)
+            sum_steps.update(1)            
+
+            # preds
+            preds = outputs.argmax(dim=1, keepdim=True)
+
+            # update metrics
+            cat_metric_preds.update(preds)
+            cat_metric_labels.update(labels)
+
+            # report progress
+            if i % 100 == 0 and i != 0:
+                print(f"Validating: Epoch: {epoch} | Step {i} | Loss: {(total_loss / completed_steps)} | Time: {time.time() - t0:.2f}")
+                # reset
+                t0 = time.time()
+
+        # compute metrics
+        ddp_steps = sum_steps.compute().item()
+        ddp_loss = sum_loss.compute().item()
+        ddp_preds = cat_metric_preds.compute()
+        ddp_labels = cat_metric_labels.compute()
+        f1 = torchmetrics.F1Score(task="multiclass", num_classes=64, average=None).to(device)
+        ddp_f1 = torch.mean(f1(ddp_preds.view(-1), ddp_labels, )).item()
+        avg_loss = (ddp_loss / ddp_steps)
         
-        # compute f1 per worker
-        local_f1 = f1_score(np.concatenate(label_storage, axis=0), np.concatenate(pred_storage, axis=0), average='weighted')
+        print(f"Validating: Epoch {epoch} Complete! | Loss: {avg_loss} | Total Steps: {ddp_steps} | Train F1: {ddp_f1} | LR: {lr}")
 
-        # save f1 in aggregator
-        mean_f1.update(local_f1)
-
-        # compute
-        mean_f1_ddp = mean_f1.compute().item()
-        sum_steps_ddp = sum_steps.compute().item()
-
-        print(f"Epoch {epoch} | Loss {(total_loss / completed_steps)} | F1: {mean_f1_ddp} | Total Steps: {sum_steps_ddp} ")
-        session.report({"loss": (total_loss / completed_steps),
+        # epoch report
+        session.report({"loss": avg_loss,
+                        "total_steps": ddp_steps,
                         "epoch": epoch,
-                        "split": "train",
-                        'F1': mean_f1_ddp},
-                       checkpoint=Checkpoint.from_dict(dict(epoch=epoch, model=model.state_dict())),)
+                        "split": 'valid',
+                        'F1': ddp_f1,
+                        "batch_size": batch_size,
+                        "lr": lr,
+                        },
+                       checkpoint=Checkpoint.from_dict(
+                           dict(epoch=epoch,
+                                model=model.state_dict())
+                                ),
+                    )
 
 
 # keep the 1 checkpoint
@@ -343,25 +438,37 @@ checkpoint_config = CheckpointConfig(
     checkpoint_score_order="max"
 )
 
+
+
+# data opts
+options = DataConfig.default_ingest_options()
+options.resource_limits.object_store_memory = 35e+10
+options.locality_with_output = True
+options.use_push_based_shuffle = True
+options.use_streaming_executor = True
+options.verbose_progress = False
+
+
 # trainer -- has 24 cores total; training should use 20 cores + 1 for trainer
 trainer = TorchTrainer(
     train_loop_per_worker=train_loop_per_worker,
-    train_loop_config={"lr": 0.001, "batch_size": 1024, "num_epochs": 1, "dropout_rates": [0.001, 0.01], "l2": 0.01},
-    datasets={"valid": valid_set},
-    scaling_config=ScalingConfig(num_workers=1,
+    train_loop_config={"num_hidden": [1000, 500], "lr": 0.001, "batch_size": 1024, "num_epochs": 1, "dropout_rates": [0.001, 0.01], "l2": 0.01},
+    datasets={"train": train_set, "valid": valid_set},
+    scaling_config=ScalingConfig(num_workers=4,  # 4 parallel jobs w/ 4 GPUs if num_workers = 1
                                  use_gpu=True,  # if use_gpu=True, num_workers = num GPUs
                                  _max_cpu_fraction_per_node=0.8,
                                 resources_per_worker={"GPU": 1},
                                 trainer_resources={"CPU": 1}
                                  ),  
-    run_config=RunConfig(checkpoint_config=checkpoint_config),
-    dataset_config=DataConfig(datasets_to_split=["valid"]),
+    dataset_config=DataConfig(datasets_to_split=["train", "valid"],
+                                execution_options=options),
+
 )
 
 
 # tune
 search_space = {
-    "lr": tune.loguniform(1e-4, 5e-1),
+    "lr": tune.loguniform(1e-4, 1e-1),
     "l2": tune.choice([0.01, 0.05, 0.1, 0.001]),
     "dropout_rates": tune.choice([[0.001, 0.01],
                                   [0.01, 0.01],
@@ -371,9 +478,10 @@ search_space = {
     "batch_size": tune.choice([128, 256, 512, 1024]),
     "num_hidden": tune.choice(
         [
-            [250, 250],
-            [500, 250],
+            [2500, 2000],
+            [2000, 500],
             [1000, 500],
+            [3000, 250],
             [2000, 1000],
             [750, 500],
         ]), }
@@ -388,12 +496,15 @@ asha_scheduler = ASHAScheduler(
     brackets=1,
 )
 
+# tuning algo
+algo = ray.tune.search.hyperopt.HyperOptSearch(metric="F1", mode="max")
 
 stopping_criteria = {"training_iteration": 1 }
 tuner = Tuner(trainable=trainer,
               param_space={"train_loop_config": search_space},
-              tune_config=TuneConfig(num_samples=25,  # n trials
+              tune_config=TuneConfig(num_samples=20,  # n trials
                                      scheduler=asha_scheduler,
+                                     search_alg=algo,
                                      ),
                run_config=RunConfig(storage_path="./results",
                                     stop=stopping_criteria,
@@ -403,9 +514,6 @@ tuner = Tuner(trainable=trainer,
 
 # fit tune
 result_grid = tuner.fit()
-
-# get results
-result_grid.get_best_result()
 
 # returns a pandas dataframe of all reported results
 col_set = ['loss', 'F1'] + result_grid.get_dataframe().filter(regex='config/train_loop').columns.tolist()
