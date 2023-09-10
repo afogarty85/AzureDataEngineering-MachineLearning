@@ -94,3 +94,71 @@ def transform_df(df: pd.DataFrame, classes) -> pd.DataFrame:
 # map
 print(f'Transforming data...')
 ds = ds.map_batches(transform_df, fn_kwargs={"classes": classes}, batch_format="pandas", compute=ActorPoolStrategy(min_size=2, max_size=num_cpus),)
+
+
+
+# inverse transform manually -- just the numerical inputs
+def inverse_transform(batch: Dict[str, np.ndarray], mu, std) -> Dict[str, np.ndarray]:
+    '''
+    standard scaler: (x - u) / s
+    manually inverse transform;
+    (x * scaler.std) + scaler.mean
+    '''
+
+    t_batch = {k: np.round((batch[k] * train_std[k]) + train_mean[k], decimals=0) \
+               if k in train_mean.keys() else v for k, v in batch.items()
+               }
+    
+    return t_batch
+
+# map
+test_set = test_set.map_batches(inverse_transform,
+                    fn_kwargs={"mu": train_mean, "std": train_std},
+                    batch_format="numpy")
+
+
+
+
+
+
+@ray.remote(num_gpus=4)
+class Trainer:
+    def __init__(self, rank, model):
+        self.rank = rank
+        self.model = model
+        self.total_loss = 0.0
+        self.completed_steps = 0
+        self.loss_fn = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        
+    def train(self, shard:ray.data.Dataset) -> float:
+        for epoch, epoch_pipe in enumerate(shard.iter_epochs()):
+            for i, batch in enumerate(epoch_pipe.iter_torch_batches(batch_size=1024*4,
+                                                      device='cuda',
+                                                      dtypes={
+                                                                "x_cont": torch.float32,
+                                                                "INPUT__YML__testname": torch.long,
+                                                                "SYNDROME": torch.long,
+                                                            },
+                                                      drop_last=True)):
+                               
+                # forward
+                outputs = self.model(x_cat=batch["INPUT__YML__testname"], x_cont=batch["x_cont"])
+                loss = self.loss_fn(outputs, batch['SYNDROME'])
+                self.total_loss += loss.detach().float().item()
+                self.completed_steps += 1
+
+                # update
+                loss.backward()
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+
+            print(f'rank: {self.rank} epoch: {epoch}, loss: {(self.total_loss / self.completed_steps)}')
+        return self.model.state_dict()
+
+trainers = [Trainer.remote(i, model) for i in range(1, 5)]
+shards = train_set.split(n=len(trainers), locality_hints=trainers)
+object_refs = [t.train.remote(s) for t, s in zip(trainers, shards)]
+
+# init procs.
+output = ray.get(object_refs)
