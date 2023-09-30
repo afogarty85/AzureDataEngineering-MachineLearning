@@ -1,0 +1,91 @@
+# update linux
+sudo apt update -y && sudo apt full-upgrade -y && sudo apt autoremove -y && sudo apt clean -y && sudo apt autoclean -y
+
+# setup miniconda
+wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
+    chmod +x Miniconda3-latest-Linux-x86_64.sh && \
+    bash ./Miniconda3-latest-Linux-x86_64.sh -b -u
+
+. ${HOME}/miniconda3/etc/profile.d/conda.sh &&     conda activate base &&     conda init &&     conda install -y python=3.10 && conda update conda
+# this is the path of miniconda; ~/miniconda3/bin
+
+# manually clean cuda
+sudo rm -rf /usr/local/cuda*
+
+# update gcc
+sudo apt install --reinstall gcc
+
+# if WSL -- download nvidia graphics drivers + CUDA via: 
+# 11.8 for example: https://developer.nvidia.com/cuda-11-8-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=WSL-Ubuntu&target_version=2.0&target_type=runfile_local
+
+
+# post install -- set specific cuda version
+export PATH=/usr/local/cuda-11.8/bin${PATH:+:${PATH}}
+export LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+export LIBRARY_PATH=\${CUDA_HOME}/lib64\${LIBRARY_PATHPATH:+:\${LIBRARY_PATHPATH}}
+
+export CONDA_HOME=\${HOME}/miniconda3
+export CUDA_HOME=/usr/local/cuda
+
+# if WSL -- add these export paths to .bashrc with vim:
+sudo vim ~/.bashrc
+
+# check install
+nvidia-smi
+nvcc -V
+
+
+
+
+# if real Linux
+# Install CUDA 11.7 and cudnn 8.5.0.96
+get -q https://developer.download.nvidia.com/compute/cuda/11.7.0/local_installers/cuda_11.7.0_515.43.04_linux.run -O cuda_11.7.0_515.43.04_linux.run && \
+    sudo bash ./cuda_11.7.0_515.43.04_linux.run --toolkit --silent && \
+    rm -f cuda_11.7.0_515.43.04_linux.run
+
+wget -q https://ossci-linux.s3.amazonaws.com/cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz -O cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz && \
+    tar xJf cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz && \
+    cd cudnn-linux-x86_64-8.5.0.96_cuda11-archive && \
+    sudo cp include/* /usr/local/cuda-11.7/include && \
+    sudo cp lib/* /usr/local/cuda-11.7/lib64 && \
+    sudo ldconfig && \
+    cd .. && rm -rf cudnn-linux-x86_64-8.5.0.96_cuda11-archive && rm -f cudnn-linux-x86_64-8.5.0.96_cuda11-archive.tar.xz
+
+# Install CUDA CUDA 11.8 and cuDNN 8.8
+wget -q https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run -O cuda_11.8.0_520.61.05_linux.run && \
+    sudo bash ./cuda_11.8.0_520.61.05_linux.run --toolkit --silent && \
+    rm -f cuda_11.8.0_520.61.05_linux.run
+
+wget -q https://developer.download.nvidia.com/compute/redist/cudnn/v8.7.0/local_installers/11.8/cudnn-linux-x86_64-8.7.0.84_cuda11-archive.tar.xz -O cudnn-linux-x86_64-8.7.0.84_cuda11-archive.tar.xz && \
+    tar xJf cudnn-linux-x86_64-8.7.0.84_cuda11-archive.tar.xz && \
+    cd cudnn-linux-x86_64-8.7.0.84_cuda11-archive && \
+    sudo cp include/* /usr/local/cuda-11.8/include && \
+    sudo cp lib/* /usr/local/cuda-11.8/lib64 && \
+    sudo ldconfig && \
+    cd .. && rm -rf cudnn-linux-x86_64-8.7.0.84_cuda11-archive && rm -f cudnn-linux-x86_64-8.7.0.84_cuda11-archive.tar.xz
+
+# Install CUDA CUDA 12.1 and cuDNN 8.8
+cd /installspace && mkdir tmp_cuda && cd tmp_cuda && \
+    wget -q https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda_12.1.0_530.30.02_linux.run && \
+    chmod +x cuda_12.1.0_530.30.02_linux.run && \
+    sudo ./cuda_12.1.0_530.30.02_linux.run --toolkit --silent && \
+    cd .. && \
+    rm -rf tmp_cuda && \
+    sudo ldconfig
+
+cd /installspace && mkdir tmp_cudnn && cd tmp_cudnn && \
+    wget -q https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/cudnn-linux-x86_64-8.8.1.3_cuda12-archive.tar.xz -O cudnn-linux-x86_64-8.8.1.3_cuda12-archive.tar.xz && \
+    tar xf cudnn-linux-x86_64-8.8.1.3_cuda12-archive.tar.xz && \
+    sudo cp -a cudnn-linux-x86_64-8.8.1.3_cuda12-archive/include/* /usr/local/cuda-12.1/include/ && \
+    sudo cp -a cudnn-linux-x86_64-8.8.1.3_cuda12-archive/lib/* /usr/local/cuda-12.1/lib64/ && \
+    cd .. && \
+    rm -rf tmp_cudnn && \
+    sudo ldconfig
+
+
+
+
+# add env to kernel list in azureml
+python -m ipykernel install --user --name my_ml
+
+
