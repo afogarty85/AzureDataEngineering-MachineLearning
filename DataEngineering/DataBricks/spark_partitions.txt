@@ -1,0 +1,8 @@
+Spark job is basically three tasks:
+1. Input
+2. Shuffle
+3. Output
+
+We can control input by maxPartitionBytes
+We can control shuffle by spark.sql.shuffle.partitions
+We can control output by coalesce / repartition / maxRecordsPerFile
