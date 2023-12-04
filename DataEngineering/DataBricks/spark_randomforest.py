@@ -7,6 +7,12 @@ from itertools import chain
 from pyspark.ml.classification import RandomForestClassifier
 from itertools import chain
 
+spark.conf.set("spark.sql.adaptive.enabled", "false");
+spark.conf.set("spark.sql.shuffle.partitions", 5000);
+spark.conf.set("spark.sql.adaptive.coalescePartitions.minPartitionNum", 4999)
+spark.conf.set("spark.sql.files.maxPartitionBytes", 1024 * 1024 * 16)
+spark.conf.set("spark.databricks.io.cache.enabled", "true")
+
 # assemble features
 assembler = VectorAssembler(
     inputCols=[f.name for f in train.schema.fields if f.name.startswith('INPUT') and not isinstance(f.dataType, StringType)],
@@ -45,11 +51,16 @@ schema = StructType([
 weight_df = spark.createDataFrame(data_tuples, schema=schema)
 
 # join weights to train
-train = train.join(weight_df, on=['SYNDROME_SI'], how='left')
+train = train.join(weight_df.hint('broadcast'), on=['SYNDROME_SI'], how='left') \
+        .select(*['features', 'Weight', 'SYNDROME_SI'])
 
+# reparition, cache
+train = train.repartition(7577)
+train = train.cache()
+train.count()
 
 # fit
-rf = RandomForestClassifier(numTrees=1000, maxDepth=5, featuresCol="features", labelCol="SYNDROME_SI", weightCol='Weight', seed=42)  # 1.7 hours for 500 trees on train set
+rf = RandomForestClassifier(numTrees=2, maxDepth=5, featuresCol="features", labelCol="SYNDROME_SI", weightCol='Weight', seed=42)  # 1.7 hours for 500 trees on train set; 5.7 hours for 1000 trees / bigger data set
 model = rf.fit(train)
 
 # get results

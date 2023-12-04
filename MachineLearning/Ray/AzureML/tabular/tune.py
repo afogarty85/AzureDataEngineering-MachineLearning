@@ -21,10 +21,8 @@ import pandas as pd
 import time, datetime
 import os
 import tempfile
-import gc
-import mlflow
-import evaluate as hf_evaluate
 from datetime import timedelta
+import evaluate as hf_evaluate
 from accelerate import InitProcessGroupKwargs
 from ray.air.config import (
     CheckpointConfig,
@@ -32,6 +30,15 @@ from ray.air.config import (
     RunConfig,
     ScalingConfig,
 )
+import mlflow
+from ray.tune import Tuner
+from ray import tune
+from ray.tune.schedulers import AsyncHyperBandScheduler
+from ray.tune.search import ConcurrencyLimiter
+from ray.tune.search.hyperopt import HyperOptSearch
+np.set_printoptions(suppress=True)
+
+
 
 # for NVLINK
 #os.environ['NCCL_P2P_LEVEL'] = 'NVL'
@@ -39,7 +46,6 @@ from ray.air.config import (
 # for no NVLINK
 #os.environ['NCCL_P2P_DISABLE'] = '1'
 
-# Current best trial: ea2b28d7 with eval_f1=0.09256934228934911 and params={'train_loop_config': {'lr': 0.000896905549698598, 'DROPOUT_RATES': (0.1, 0.05), 'weight_decay': 0.0009714115351949584, 'batch_size_per_device': 40960, 'HIDDEN_DIMS': (5000, 500)}}
 
 
 
@@ -74,7 +80,6 @@ def parse_args():
         default=1024,
         help="Batch size to use per device (For evaluation).",
     )
-
     parser.add_argument(
         "--num_devices", type=int, default=1, help="Number of devices to use."
     )
@@ -83,13 +88,22 @@ def parse_args():
     )    
     parser.add_argument(
         "--seed", type=int, default=1, help="Seed."
+    ) 
+    parser.add_argument(
+        "--num_continuous", type=int, default=150, help="Num continuous features."
     )  
+    parser.add_argument(
+        "--num_classes", type=int, default=3, help="Num labels."
+    )   
     parser.add_argument(
         "--num_epochs", type=int, default=1, help="Number of epochs to train for."
     )
     parser.add_argument(
         "--output_dir", type=str, default='/mnt/c/Users/afogarty/Desktop/RandomizedTest/checkpoints', help="Output dir."
     )
+    parser.add_argument(
+        "--label_col", type=str, default='', help="label col"
+    )    
     parser.add_argument("--lr", type=float, default=5e-6, help="Learning rate to use.")
     parser.add_argument("--weight_decay", type=float, default=0.001, help="Weight decay.")
 
@@ -211,10 +225,10 @@ class MLP(torch.nn.Module):
         return x
 
 
+
 def evaluate(model, valid_ds, loss_fn, accelerator, eval_steps, config, ds_kwargs):
     model.eval()
     losses = []
-    losses2 = []
 
     print(f"Found these config: {config} " )
 
@@ -237,37 +251,27 @@ def evaluate(model, valid_ds, loss_fn, accelerator, eval_steps, config, ds_kwarg
         loss = loss_fn(outputs, labels)
 
         # collect losses and preds
-        losses.append(accelerator.gather(loss[None]))
-        losses2.append(accelerator.gather_for_metrics(loss.repeat(config['eval_batch_size_per_device'])))
+        losses.append(accelerator.gather_for_metrics(loss.repeat(config['eval_batch_size_per_device'])))
 
         predictions, references = accelerator.gather_for_metrics((predictions, labels))
         metric.add_batch(predictions=predictions, references=references,)
 
     # cat
-    losses = torch.stack(losses)
-    losses2 = torch.cat(losses2)
-
-    losses_nan = torch.nonzero(torch.isnan(losses.view(-1))).view(-1).shape
-    losses2_nan = torch.nonzero(torch.isnan(losses2.view(-1))).view(-1).shape
-
-    accelerator.print(
-                        f"[losses nan shape {losses_nan} losses2_nan {losses2_nan} ] "
-                    )
+    losses = torch.cat(losses)
 
     # compute f1
     eval_metric = metric.compute(average=None)
 
     accelerator.print(
-                        f"[losses shape {losses.shape} losses2 shape {losses2.shape} ] "
+                        f"[ F1 Results {eval_metric}  ] "
                     )
 
     try:
         eval_loss = torch.mean(losses).item()
-        eval_loss2 = torch.mean(losses2).item()
         perplexity = math.exp(eval_loss)
     except OverflowError:
         perplexity = float("inf")
-    return perplexity, eval_loss, eval_metric, eval_loss2
+    return perplexity, eval_loss, eval_metric
 
 
 # train loop
@@ -317,9 +321,36 @@ def train_loop_per_worker(config):
         ).to(accelerator.device).squeeze(0)
         }
 
-    print("Collecting trash")
-    gc.collect()
+    # cat cols
+    EMBEDDING_TABLE_SHAPES = {
+                            'INPUT__YML__testname_SI': (578, 75),
+                            'INPUT__REG__m_ddr_speed_variant_SI': (6, 25),
+                            'INPUT__REG__m_hazard_type_SI': (7, 25),
+                            'INPUT__REG__m_cmd_merge_mode_0__SI': (5, 25),
+                            'INPUT__REG__m_cmd_merge_mode_1__SI': (5, 25),
+                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_0_reg_OPCODE_config_SI': (3, 25),
+                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_1_reg_OPCODE_config_SI': (3, 25),
+                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_2_reg_OPCODE_config_SI': (3, 25),
+                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_3_reg_OPCODE_config_SI': (3, 25),
+                            }
 
+    # set model params
+    NUM_CLASSES = args.num_classes
+    EMBEDDING_DROPOUT_RATE = 0.01
+    DROPOUT_RATES = [0.05, 0.05, 0.00]
+    HIDDEN_DIMS = list(config['HIDDEN_DIMS'])
+    NUM_CONTINUOUS = args.num_continuous
+
+    # cat cols
+    cat_cols = ['INPUT__YML__testname_SI',
+                'INPUT__REG__m_ddr_speed_variant_SI',
+                'INPUT__REG__m_hazard_type_SI',
+                'INPUT__REG__m_cmd_merge_mode_0__SI',
+                'INPUT__REG__m_cmd_merge_mode_1__SI',
+                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_0_reg_OPCODE_config_SI',
+                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_1_reg_OPCODE_config_SI',
+                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_2_reg_OPCODE_config_SI',
+                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_3_reg_OPCODE_config_SI']
 
     # init model
     model = MLP(embedding_table_shapes=EMBEDDING_TABLE_SHAPES,
@@ -329,27 +360,30 @@ def train_loop_per_worker(config):
                 layer_dropout_rates=DROPOUT_RATES,
                 num_classes=NUM_CLASSES
         )
-    
 
-    class_weights = np.array([1.65461779e-02, 2.68999914e+00, 5.07900654e+00, 4.28908464e+00,
-       1.16091762e+01, 1.03648701e+01, 2.93912131e+01, 2.90965959e+01,
-       4.44609808e+01, 4.04053000e+01, 5.76564545e+01, 1.17978337e+02,
-       1.48706515e+02, 1.12745027e+02, 1.77894266e+02, 1.89995460e+02,
-       1.90459715e+02, 2.14853730e+02, 1.86309543e+02, 2.36508908e+02,
-       1.64280295e+02, 2.66306638e+02, 2.70927700e+02, 2.84318952e+02,
-       3.01235499e+02, 2.69569430e+02, 3.53611385e+02, 4.75073930e+02,
-       4.83526796e+02, 2.44419751e+02, 5.84080147e+02, 3.05185289e+02,
-       2.65526031e+02, 6.91869519e+02, 7.26040850e+02, 7.60873229e+02,
-       7.92039364e+02, 8.15089148e+02, 1.26857002e+02, 1.09986214e+03,
-       5.81916762e+02, 1.22501702e+03, 1.23570600e+03, 1.31043135e+03,
-       1.44529822e+03, 1.50208242e+03, 1.84426627e+03, 1.85105665e+03,
-       1.97737261e+03, 2.14071529e+03, 2.45362121e+03, 2.52763693e+03,
-       2.61915596e+03, 3.06833681e+03, 1.55120946e+03, 3.49493908e+03,
-       4.04462579e+03, 4.88340929e+03, 1.83484302e+04, 3.59104990e+05,
-       1.00549397e+07, 3.11111391e+00])
+    class_weights = np.array([1.37060329e-02, 1.02219155e+00, 1.30289178e+00, 5.36079614e+00,
+       8.27647889e+00, 4.66976689e+00, 4.34910918e+00, 1.47928851e+01,
+       1.04163098e+01, 1.30806462e+01, 2.14153581e+01, 1.35959626e+01,
+       2.45488581e+01, 2.52821730e+01, 1.37548091e+01, 1.71960018e+01,
+       3.23873632e+01, 2.70199151e+01, 3.42332613e+01, 2.33320805e+01,
+       4.62815528e+01, 3.60149549e+01, 4.17275284e+01, 8.23564271e+01,
+       5.85614500e+01, 9.17475373e+01, 2.10937144e+01, 7.05623599e+01,
+       9.75429441e+01, 7.67224020e+01, 1.06070969e+02, 9.03475717e+01,
+       6.01505562e+01, 1.83001502e+02, 1.90162602e+02, 7.42686058e+01,
+       1.14866880e+02, 1.97625062e+02, 2.79258400e+02, 3.83770140e+02,
+       1.94747608e+02, 3.65473661e+02, 8.32792316e+01, 2.77331951e+02,
+       5.79062941e+02, 3.10100805e+02, 4.56400057e+02, 6.19197521e+02,
+       6.41484141e+02, 5.71255456e+02, 7.24807424e+02, 4.26547509e+02,
+       1.14667694e+02, 8.90232773e+02, 8.90793161e+02, 9.44038703e+02,
+       1.57262848e+02, 1.11654885e+03, 1.15143533e+03, 1.18598225e+03,
+       1.28787224e+03, 1.32327849e+03, 2.63935022e+02, 1.44399389e+03,
+       1.50480010e+03, 6.03305771e+02, 1.78136205e+03, 3.11287729e+03,
+       3.19006766e+03, 3.24567435e+03, 3.30479686e+03, 3.32654917e+03,
+       3.33124768e+03, 3.49583502e+03, 9.82718066e+04, 7.07557008e+06,
+       2.08382826e+00])
                             
     # create weights
-    class_weights = torch.tensor(class_weights, device=accelerator.device, dtype=torch.float32) / config['batch_size_per_device']
+    class_weights = torch.tensor(class_weights, device=accelerator.device, dtype=torch.float32)
     
     # train steps
     num_train_steps_per_epoch = config['train_ds_len'] // ((accelerator.num_processes * config['batch_size_per_device']))
@@ -364,17 +398,17 @@ def train_loop_per_worker(config):
     # prepare
     model, optimizer = accelerator.prepare(model, optimizer)
 
-    # data loaders
-    train_dataloader = train_ds.iter_torch_batches(batch_size=config['batch_size_per_device'], collate_fn=collate_fn, prefetch_batches=4, drop_last=True)
-    
 
+    # data loaders
+    train_dataloader = train_ds.iter_torch_batches(
+        batch_size=config['batch_size_per_device'], collate_fn=collate_fn, prefetch_batches=4, drop_last=True, local_shuffle_buffer_size=config['batch_size_per_device']*2)
 
     # Now we train the model
     if accelerator.is_main_process:
         print("Starting training ...")
         print("Number of batches on main process", num_train_steps_per_epoch )
 
-    for epoch in range(config['num_epochs']):
+    for epoch in range(1, config['num_epochs'] + 1):
         fwd_time_sum, bwd_time_sum, optim_step_time_sum = 0, 0, 0
         s_epoch = time.time()
         model.train()
@@ -418,29 +452,6 @@ def train_loop_per_worker(config):
             accelerator.wait_for_everyone()
             aggregated_loss = torch.mean(accelerator.gather(loss[None])).item()
 
-            if accelerator.is_main_process:
-                mlflow.log_metric('train_loss', aggregated_loss)
-
-            # as long as this is not the last step report here
-            if step != (num_train_steps_per_epoch - 1):
-                ray.train.report(
-                    {
-                        "epoch": epoch,
-                        "iteration": step,
-                        "train_loss_batch": aggregated_loss,
-                        "avg_train_loss_epoch": None,
-                        "eval_loss": None,
-                        "perplexity": None,
-                        "num_iterations": step + 1,
-                        "train_time_per_epoch": None,
-                        "eval_time_per_epoch": None,
-                        "fwd_time": fwd_time,
-                        "bwd_time": bwd_time,
-                        "avg_fwd_time_per_epoch": None,
-                        "avg_bwd_time_per_epoch": None,
-                    }
-                )
-
         e_epoch = time.time()
         accelerator.print("Train time per epoch: ", e_epoch - s_epoch)
 
@@ -448,8 +459,7 @@ def train_loop_per_worker(config):
         print("Running evaluation ...")
         print("Waiting ...")
         accelerator.wait_for_everyone()
-
-        perplex, eloss, ef1, eval_loss2 = evaluate(
+        perplex, eloss, ef1 = evaluate(
             model=model,
             valid_ds=valid_ds,
             loss_fn=loss_fn,
@@ -463,11 +473,7 @@ def train_loop_per_worker(config):
         accelerator.print("Eval result loss", eloss)
         accelerator.print("Eval perplex", perplex)
         accelerator.print("Eval F1", avg_eval_f1)
-        accelerator.print("Eval Loss2", eval_loss2)
         
-        if accelerator.is_main_process:
-            mlflow.log_metric('eval_loss', eloss)
-
         eval_e_epoch = time.time()
         accelerator.print("Eval time per epoch: ", eval_e_epoch - eval_s_epoch)
         accelerator.print("avg fwd time: ", fwd_time_sum / (step + 1))
@@ -476,33 +482,13 @@ def train_loop_per_worker(config):
 
         metrics = {
             "epoch": epoch,
-            "iteration": step,
-            "train_loss_batch": aggregated_loss,
             "avg_train_loss_epoch": loss_sum.item() / (step + 1),
             "eval_f1": avg_eval_f1,
-            "eval_loss": eloss,
-            "perplexity": perplex,
-            "num_iterations": step + 1,
-            "train_time_per_epoch": e_epoch - s_epoch,
-            "eval_time_per_epoch": eval_e_epoch - eval_s_epoch,
-            "fwd_time": fwd_time,
-            "bwd_time": bwd_time,
-            "avg_fwd_time_per_epoch": fwd_time_sum / (step + 1),
-            "avg_bwd_time_per_epoch": bwd_time_sum / (step + 1),
+            "eval_loss": eloss
         }
 
-        ray.train.report(metrics)
 
-        
-        # override output_dir
-        args.output_dir = aml_context.output_datasets['output_dir']
-        
-        accelerator.print(f"Saving the model locally at {args.output_dir}")
-        accelerator.wait_for_everyone()
-        if accelerator.is_main_process:
-            if accelerator.process_index == 0:
-                state = accelerator.get_state_dict(model) # This will call the unwrap model as well
-                accelerator.save(state, f"{args.output_dir}/epoch_{epoch}_state_dict.pt")
+        ray.train.report(metrics)
 
 
 if __name__ == '__main__':
@@ -512,12 +498,12 @@ if __name__ == '__main__':
 
     if not ray.is_initialized():
         # init a driver
-        ray.init(runtime_env={
+        ray.init(
+                 runtime_env={
             "env_vars": {
                 "RAY_AIR_LOCAL_CACHE_DIR": args.output_dir,
                 "RAY_memory_usage_threshold": ".95"
             },
-            "working_dir": ".",
         }
     )
         print('ray initialized')
@@ -543,42 +529,14 @@ if __name__ == '__main__':
                                 .drop_columns(['test_split', 'randomizedTestKey', 'condition_name_SI'])
 
     valid_set = ray.data.read_parquet(data_path, ray_remote_args={"num_cpus": 0.25},
-                                filter=pc.field('test_split').isin(['test'])) \
+                                filter=pc.field('test_split').isin(['valid'])) \
                                 .drop_columns(['test_split', 'randomizedTestKey', 'condition_name_SI'])
                                 
                                 
 
-    # cat cols
-    EMBEDDING_TABLE_SHAPES = {
-                            'INPUT__YML__testname_SI': (382, 75),
-                            'INPUT__REG__m_ddr_speed_variant_SI': (6, 25),
-                            'INPUT__REG__m_hazard_type_SI': (5, 25),
-                            'INPUT__REG__m_cmd_merge_mode_0__SI': (5, 25),
-                            'INPUT__REG__m_cmd_merge_mode_1__SI': (5, 25),
-                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_0_reg_OPCODE_config_SI': (3, 25),
-                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_1_reg_OPCODE_config_SI': (3, 25),
-                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_2_reg_OPCODE_config_SI': (3, 25),
-                            'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_3_reg_OPCODE_config_SI': (3, 25),
-                            }
-
-    # set model params
-    NUM_CLASSES = 62
-    EMBEDDING_DROPOUT_RATE = 0.01
-    DROPOUT_RATES = [0.05, 0.01]
-    HIDDEN_DIMS = [5000, 500]  
-    NUM_CONTINUOUS = 50
-
-    # cat cols
-    cat_cols = ['INPUT__YML__testname_SI',
-                'INPUT__REG__m_ddr_speed_variant_SI',
-                'INPUT__REG__m_hazard_type_SI',
-                'INPUT__REG__m_cmd_merge_mode_0__SI',
-                'INPUT__REG__m_cmd_merge_mode_1__SI',
-                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_0_reg_OPCODE_config_SI',
-                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_1_reg_OPCODE_config_SI',
-                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_2_reg_OPCODE_config_SI',
-                'INPUT__YML___m_ddrmctop_reg_block_trace_pa_fltr_cmd_3_reg_OPCODE_config_SI']
-
+    # light shuffle
+    train_set = train_set.randomize_block_order()
+    valid_set = valid_set.randomize_block_order()
 
 
 
@@ -593,9 +551,65 @@ if __name__ == '__main__':
     options = ray.data.ExecutionOptions(verbose_progress=True, locality_with_output=False, resource_limits=ray.data.ExecutionResources(object_store_memory=230e9))
     dataset_config = DataConfig(datasets_to_split=["train", "valid"], execution_options=options)
 
-    strategy = "SPREAD"
+    strategy = "PACK"  # default is PACK; was SPREAD
     config['train_ds_len'] = train_set.count()
     config['eval_ds_len'] = valid_set.count()
+
+
+  
+    # Hyperparameters to start with
+    search_alg = HyperOptSearch(points_to_evaluate=None)
+    search_alg = ConcurrencyLimiter(search_alg, max_concurrent=2)  # trade off b/w optimization and search space
+
+    # Parameter space
+    param_space = {
+        "train_loop_config": {
+            "lr": tune.choice([1e-2, 1e-3, 5e-3, 1e-4, 5e-4, 1e-5, 1e-6]),
+            "weight_decay": tune.loguniform(5e-4, 1e-1),
+            "batch_size_per_device": tune.choice([
+                                                  1024,
+                                                  1024*2,
+                                                  1024*3,
+                                                  1024*4,
+                                                  8192*1,
+                                                  8192*2,
+                                                  8192*3,
+                                                  8192*4
+                                                  ]),
+            "HIDDEN_DIMS": tune.choice(
+                [
+                    (10000, 5000, 500),
+                    (2000, 2000, 2000),
+                    (20000, 1000, 500),
+                    (20000, 10000, 2500),
+                    (5000, 1000, 250),
+                    # (10000, 500),
+                    # (1000, 100),
+                    # (5000, 500),
+                    # (5000, 5000),
+                    # (10000, 10000),
+                    # (20000, 10000),
+                    # (2000, 1500),
+                ]),
+        }
+    }
+
+    # Scheduler
+    scheduler = AsyncHyperBandScheduler(
+        time_attr='epoch',
+        max_t=2,  # max epoch (<time_attr>) per trial
+        grace_period=1,  # min epoch (<time_attr>) per trial
+    )
+
+    # Tune config
+    tune_config = tune.TuneConfig(
+        metric="eval_f1",
+        mode="max",
+        search_alg=search_alg,
+        scheduler=scheduler,
+        num_samples=16,
+    )
+
 
     # trainer -- 32 GPUs, 160 Cores
     trainer = TorchTrainer(
@@ -608,10 +622,24 @@ if __name__ == '__main__':
         )
 
 
-    # fit
-    result = trainer.fit()
+    # Tuner
+    tuner = Tuner(
+        trainable=trainer,
+        run_config=None,
+        param_space=param_space,
+        tune_config=tune_config,
+    )
 
-
+    # Tune
+    results = tuner.fit()
+    best_trial = results.get_best_result(metric="eval_f1", mode="max")
+    d = {
+            "timestamp": datetime.datetime.now().strftime("%B %d, %Y %I:%M:%S %p"),
+            "params": best_trial.config["train_loop_config"],
+        #"metrics": utils.dict_to_list(best_trial.metrics_dataframe.to_dict(), keys=["epoch", "train_loss", "val_loss"]),
+        }
+    
+    print(d)
     print("Training complete!")
 
 

@@ -1,0 +1,44 @@
+name: my_ml_env
+channels:
+  - pytorch
+  - nvidia/label/cuda-11.8.0
+  - conda-forge
+dependencies:
+  - python==3.10
+  - pytorch=2.0.1
+  - torchvision
+  - torchaudio
+  - ninja
+  - pip==23.0.1
+  - packaging
+  - pip: 
+      - scikit-learn
+      - numpy
+      - pyarrow
+      - pandas
+      - azure-identity
+      - azure-keyvault-secrets
+      - deepspeed
+      - accelerate
+      - datasets
+      - peft
+      - evaluate
+      - azure-ai-ml
+      - azureml-core
+      - sentencepiece
+      - rouge-score
+      - mlflow
+      - azureml-mlflow
+      - dm-tree
+      - ray[air]
+      - tokenizers
+      - azureml-dataset-runtime
+      - azure-storage-blob
+      - smart_open[azure]
+      - transformers
+      - flash-attn
+      - aiohttp
+      - asyncio
+      - nest-asyncio
+      - azure-storage-file-datalake
+      - azure-identity
