@@ -134,7 +134,7 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
             forecasts = forecasts.reset_index().merge(y_test, how='inner', on=['ds', 'unique_id'])
             
             # row-wise error
-            forecasts['MAE'] = forecasts.apply(lambda row:  mae(row['PatchTST'], row['y']), axis=1 ).astype(int)
+            forecasts['MAE'] = forecasts.apply(lambda row:  mae(row['y'], row['PatchTST']), axis=1 ).astype(int)
 
             # in the the future
             X_test = self.data.query(f"unique_id == '{feature_name}'").reset_index(drop=True)
@@ -185,16 +185,24 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
                                             "PatchTST-lo-80": "prediction_low_80", "PatchTST-hi-80": "prediction_high_80",
                                             "y": "actual", "ds": "Date", "unique_id": "feature_name"})
 
+
+    # add project
+    storage_df['project'] = out_name.split('/')[-1].replace('.parquet', '')
+
     # cast
     storage_df['prediction'] = storage_df['prediction'].astype(int)
     storage_df['prediction_low_80'] = storage_df['prediction_low_80'].astype(int)
     storage_df['prediction_high_80'] = storage_df['prediction_high_80'].astype(int)
+    storage_df['feature_name'] = storage_df['feature_name'].astype('string')
+    storage_df['project'] = storage_df['project'].astype('string')
+    storage_df['Date'] = storage_df['Date'].astype('string')
 
     # drop
-    storage_df = storage_df.drop(['PatchTST'], axis=1)
+    storage_df = storage_df.drop(['PatchTST'], axis=1).reset_index(drop=True)
 
-    # add project
-    storage_df['project'] = out_name.split('/')[-1].replace('.parquet', '')
+    # add monthYear
+    storage_df['monthYear'] = pd.to_datetime(storage_df['Date']) + pd.offsets.MonthEnd(n=1)
+
 
     # save
     storage_df.to_parquet(output_path + out_name)
