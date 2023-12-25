@@ -33,7 +33,7 @@ dependencies:
       - tokenizers
       - azureml-dataset-runtime
       - azure-storage-blob
-      - transformers==4.36.1
+      - transformers==4.36.2
       - flash-attn
       - aiohttp
       - asyncio

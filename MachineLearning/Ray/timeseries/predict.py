@@ -20,6 +20,8 @@ from ray.util.actor_pool import ActorPool
 import time
 from ray.train import CheckpointConfig
 import gc  
+import time  
+from itertools import cycle  
 
 # init Azure ML run context data
 aml_context = Run.get_context()
@@ -82,6 +84,8 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
         "logger": False,
     }
 
+    file_name = out_name.split('/')[-1].replace('.parquet', '')
+
 
     # fit best config
     print("Fitting best config...")
@@ -90,7 +94,7 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
     nf_best.fit(df=df, verbose=False)
 
     # save model
-    nf_best.save(path=output_path + '/fine_tuned_model',
+    nf_best.save(path=output_path + f'/fine_tuned_model_{file_name}',
             model_index=None, 
             overwrite=True,
             save_dataset=True)
@@ -103,10 +107,10 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
     @ray.remote(num_gpus=0.5, num_cpus=0.5)
     class BatchPredictor:
         def __init__(self, model_path, data, max_retries=3, retry_delay=5):  
-            self.model_path = model_path  
+            self.model_path = model_path
+            self.results = {}
             self.data = data  
             self.horizon = 90  
-            self.results = None  
             self.max_retries = max_retries  
             self.retry_delay = retry_delay  
             self.load_model()  
@@ -118,7 +122,7 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
                     break  
                 except Exception as e:  
                     if i < self.max_retries - 1:  # i is zero indexed  
-                        sleep(self.retry_delay)  
+                        time.sleep(self.retry_delay)  
                         continue  
                     else:  
                         raise e  
@@ -140,45 +144,47 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
             X_test = self.data.query(f"unique_id == '{feature_name}'").reset_index(drop=True)
             forecasts_future = self.model.predict(df=X_test).reset_index()
             forecasts = pd.concat([forecasts, forecasts_future], axis=0)
-            self.results = forecasts
-    
-        def get_results(self):  
-            return self.results
+            self.results[feature_name] = forecasts
+        
+        def get_results(self):    
+            # concatenate all results  
+            all_results = pd.concat(self.results.values(), axis=0)  
+            return all_results  
     
         def shutdown(self):  
             ray.actor.exit_actor()  
 
 
-    # storage model / df
-    test_df_ref = ray.put(test_df)
+    # storage model / df  
+    test_df_ref = ray.put(test_df)  
+    
+    feature_names = test_df['unique_id'].unique()    
+    num_gpus = 24  
+    
+    # create one actor per GPU    
+    actors = [BatchPredictor.remote(output_path + f'/fine_tuned_model_{file_name}', test_df_ref) for _ in range(num_gpus)]    
+    pool = ActorPool(actors)    
 
-    feature_names = test_df['unique_id'].unique()  
-    num_gpus = 24
+    # create tasks for all features  
+    tasks = []  
+    for actor, feature_name in zip(cycle(actors), feature_names):  
+        tasks.append(actor.predict.remote(feature_name))  
     
-    # create one actor per GPU  
-    actors = [BatchPredictor.remote(output_path + '/fine_tuned_model', test_df_ref) for _ in range(num_gpus)]  
-    pool = ActorPool(actors)  
+    # block until all tasks finish and get the results  
+    ray.get(tasks)  
+    
+    # get results from actors  
+    results = [actor.get_results.remote() for actor in actors]  
+    
+    # gather all results  
+    storage_df = pd.concat(ray.get(results), axis=0)  
 
-    # distribute work across actors and store the futures  
-    futures = []  
-    for i, feature_name in enumerate(feature_names):    
-        future = actors[i % num_gpus].predict.remote(feature_name)  
-        futures.append(future)  
-    
-    # Wait for all futures to finish  
-    ray.get(futures)  
-    
-    # Get results    
-    storage_df = pd.DataFrame()    
-    for actor in actors:    
-        tdf = ray.get(actor.get_results.remote())    
-        storage_df = pd.concat([storage_df, tdf], axis=0)    
-    
-    # kill actors  
-    for actor in actors:
-        actor.shutdown.remote()
-        ray.kill(actor)
-        gc.collect()
+    # kill actors    
+    for actor in actors:  
+        actor.shutdown.remote()  
+        ray.kill(actor)  
+        gc.collect()  
+
 
     # rename
     storage_df = storage_df.rename(columns={"PatchTST-median": "prediction", "MAE": "absolute_error",
@@ -186,8 +192,11 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
                                             "y": "actual", "ds": "Date", "unique_id": "feature_name"})
 
 
+    # add monthYear
+    storage_df['monthYear'] = pd.to_datetime(storage_df['Date']) + pd.offsets.MonthEnd(n=0)
+
     # add project
-    storage_df['project'] = out_name.split('/')[-1].replace('.parquet', '')
+    storage_df['project'] = file_name
 
     # cast
     storage_df['prediction'] = storage_df['prediction'].astype(int)
@@ -196,12 +205,12 @@ for train_set, params, test_set, out_name in zip(train_dataset_list, pickle_list
     storage_df['feature_name'] = storage_df['feature_name'].astype('string')
     storage_df['project'] = storage_df['project'].astype('string')
     storage_df['Date'] = storage_df['Date'].astype('string')
+    storage_df['monthYear'] = storage_df['monthYear'].astype('string')
 
     # drop
     storage_df = storage_df.drop(['PatchTST'], axis=1).reset_index(drop=True)
 
-    # add monthYear
-    storage_df['monthYear'] = pd.to_datetime(storage_df['Date']) + pd.offsets.MonthEnd(n=1)
+
 
 
     # save
