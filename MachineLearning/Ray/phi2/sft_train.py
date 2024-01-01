@@ -6,6 +6,8 @@ import transformers
 import torch
 import ray
 import numpy as np
+from transformers import get_linear_schedule_with_warmup  
+import bitsandbytes as bnb
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
 from transformers import TrainingArguments, Trainer, default_data_collator
 from datasets import load_dataset, interleave_datasets
@@ -136,24 +138,52 @@ def train_func(config):
 
     # train_ds_iterable = train_ds.iter_torch_batches(batch_size=batch_size, collate_fn=collate_fn, prefetch_batches=1,)
     # valid_ds_iterable = valid_ds.iter_torch_batches(batch_size=batch_size, collate_fn=collate_fn, prefetch_batches=1,)
-    flan_ds = load_dataset("json", data_dir=data_path, split='train', num_proc=180).shuffle(seed=4).remove_columns(['_template_idx', '_task_source', '_task_name', '_template_type']).train_test_split(test_size=0.1, seed=4)
-    
+    flan_ds = load_dataset("json", data_dir=data_path, split='train', num_proc=180).shuffle(seed=4).remove_columns(['_template_idx', '_task_source', '_task_name', '_template_type'])
+    # .train_test_split(test_size=0.1, seed=4)
+        
     def formatting_func(example):
-        ''' packing '''
-        text = f"### Question: {example['inputs']}\n ### Answer: {example['targets']}"
+        """
+        Function to pack 'inputs' and 'targets' into a single string in the format 
+        'Question: {inputs}\nAnswer: {targets}<EOS>'
+
+        Arguments:
+        example -- a dictionary containing 'inputs' and 'targets' keys.
+
+        Returns:
+        A string formatted as 'Question: {inputs}\nAnswer: {targets}<EOS>'
+        """
+        text = f"Question: {example['inputs']}\nAnswer: {example['targets']}<EOS>"
         return text
+
 
     def formatting_prompts_complete(example):
         ''' completions '''
         output_texts = []
         for i in range(len(example['inputs'])):
-            text = f"### Question: {example['inputs'][i]}\n ### Answer: {example['targets'][i]}"
+            #text = f"### Question: {example['inputs'][i]}\n ### Answer: {example['targets'][i]}"
+            text = f"{example['inputs'][i]} {example['targets'][i]}</s>"
             output_texts.append(text)
         return output_texts
 
-    # for completion fine-tuning
-    response_template = " ### Answer:"
-    collator = DataCollatorForCompletionOnlyLM(response_template=tokenizer.encode(response_template, add_special_tokens=False)[2:], tokenizer=tokenizer,)
+    # for completion fine-tuning -- did not flag with previous example:
+    #response_template = " ### Answer:"
+    #collator = DataCollatorForCompletionOnlyLM(response_template=tokenizer.encode(response_template, add_special_tokens=False)[2:], tokenizer=tokenizer,)
+
+    # fails
+    # response_template = " "
+    # collator = DataCollatorForCompletionOnlyLM(response_template=tokenizer.encode(response_template, add_special_tokens=False), tokenizer=tokenizer,)
+
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "microsoft/phi-2", torch_dtype="auto", flash_attn=True, flash_rotary=True, fused_dense=True, trust_remote_code=True)
+
+    initial_token_count = len(tokenizer)
+    response_template = " "
+    added_token_count = tokenizer.add_special_tokens({"additional_special_tokens": [response_template]})
+    model.resize_token_embeddings(new_num_tokens=initial_token_count+added_token_count)
+
+    response_template = " "
+    collator = DataCollatorForCompletionOnlyLM(response_template=response_template, tokenizer=tokenizer)
 
     args = TrainingArguments(
             logging_steps=1,
@@ -180,22 +210,16 @@ def train_func(config):
 
     # SFT
     trainer = SFTTrainer(
-        model="microsoft/phi-2",
-        model_init_kwargs={
-        "torch_dtype": "auto",
-        "flash_attn": True,
-        "flash_rotary": True,
-        "fused_dense": True,
-        "trust_remote_code": True,
-    },
+        model=model,
         tokenizer=tokenizer,
-        train_dataset=flan_ds['train'],
-        eval_dataset=flan_ds['test'],
-        formatting_func=formatting_func,
-        #data_collator=collator,  # for completion fine-tuning
-        max_seq_length=2048,  # 2048
+        train_dataset=flan_ds,
+        #eval_dataset=flan_ds['test'],
+        formatting_func=formatting_prompts_complete,
+        data_collator=collator,  # for completion fine-tuning
+        max_seq_length=800,  # 2048
         neftune_noise_alpha=5,
-        packing=True,
+        packing=False,
+        dataset_num_proc=384,
         args=args,
     )
 
@@ -216,6 +240,7 @@ ray.init(
 )
 
 
+
 # # data
 # flan_ds = load_dataset("json", data_dir=data_path, split='train').remove_columns(['task']).train_test_split(test_size=0.2, seed=4)
 
@@ -227,9 +252,10 @@ ray.init(
 
 # training notes: 
 # ZeRO-2 // batch_size 2 // 2048 max_seq_length = 80 gb GRAM used on A100 (80GB) // 15-20s a step at grad accum 1
-# ZeRO-2 // batch_size 12 // 512 max_seq_length = 60 ~ 80 gb GRAM on A100 // training on completions // ~ 20/25s a step
-batch_size = 2
+# ZeRO-2 // batch_size 12 // 512 max_seq_length = 64 gb GRAM on A100 // training on completions // ~ 20/25s a step
+# ZeRO-2 // batch_size 6 // 800 max_seq_length = 64-74 gb GRAM on A100 // training on completions // ~ 20/25s a step
 
+batch_size = 6
 
 # trainer
 my_trainer = TorchTrainer(
@@ -246,3 +272,21 @@ result = my_trainer.fit()
 
 
 # 
+
+
+# override
+# class CustomTrainer(Trainer):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+
+#     def create_optimizer_and_scheduler(self, num_training_steps):
+#         self.optimizer = adamw_bnb_8bit(self.model.parameters(), 
+#                                         lr=self.args.learning_rate, 
+#                                         weight_decay=self.args.weight_decay)
+        
+#         self.lr_scheduler = get_linear_schedule_with_warmup(
+#             self.optimizer, 
+#             num_warmup_steps=self.args.warmup_steps, 
+#             num_training_steps=num_training_steps
+#         )
+
