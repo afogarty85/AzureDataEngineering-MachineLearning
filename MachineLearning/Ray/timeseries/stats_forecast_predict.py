@@ -351,6 +351,7 @@ for data_set, params in zip(dataset_list, pickle_list):
 
     # test data
     tseries_df = generate_forecasting_df(df=df, **test_dict[data_set])
+    print(f"Generated a DF of shape: {tseries_df.shape}")
 
     # open tune results
     print("Retrieving tuning file...")
@@ -376,8 +377,7 @@ for data_set, params in zip(dataset_list, pickle_list):
             print(f"Now on feature: {feature_name}")
 
             # get model
-            best_model_config = self.model_list.get(self.params[feature_name]['model'])(
-                season_length=self.params[feature_name]['params']['season_length'])
+            best_model_config = self.model_list.get(self.params[feature_name]['model'])()
 
             # get model str
             model_str = str(best_model_config)
@@ -436,6 +436,7 @@ for data_set, params in zip(dataset_list, pickle_list):
                                                 "MAE": "absolute_error",
                                                 "y": "actual",
             })
+            print(f"Number of results after prediction for feature {feature_name}: {forecasts.shape}")  
                 
 
             # add monthYear
@@ -449,34 +450,40 @@ for data_set, params in zip(dataset_list, pickle_list):
 
             self.results[feature_name] = forecasts   
         
-        def get_results(self):    
-            # concatenate all results  
-            all_results = pd.concat(self.results.values(), axis=0)  
-            return all_results  
+        def get_results(self):      
+            # concatenate all results    
+            if self.results:  
+                all_results = pd.concat(self.results.values(), axis=0)    
+                return all_results    
+            else:  
+                return pd.DataFrame()
 
         def shutdown(self):  
             ray.actor.exit_actor()  
 
 
+    # set of features
+    feature_names = list(best_config.keys())
+    print(f"Using this feature list: {feature_names}")
+
     # storage model / df  
     test_df_ref = ray.put(tseries_df)  
-    num_cpus = 400  
+    num_cpus = 400
     
     # create one actor per CPU    
     actors = [BatchPredictor.remote(data=test_df_ref, params=best_config, model_list=model_list) for _ in range(num_cpus)]    
-    pool = ActorPool(actors)    
-
-    # set of features
-    feature_names = list(best_config.keys())
+    pool = ActorPool(actors)
 
     # create tasks for all features  
     tasks = []  
     for actor, feature_name in zip(cycle(actors), feature_names):  
         tasks.append(actor.predict.remote(feature_name))  
     
-    # block until all tasks finish and get the results  
-    ray.get(tasks)  
-    
+    # # block until all tasks finish and get the results  
+    # ray.get(tasks)  
+    # Wait for all tasks to finish before getting the results    
+    ready, not_ready = ray.wait(tasks, num_returns=len(tasks))  
+
     # get results from actors  
     results = [actor.get_results.remote() for actor in actors]  
     
@@ -487,7 +494,6 @@ for data_set, params in zip(dataset_list, pickle_list):
     for actor in actors:  
         actor.shutdown.remote()  
         ray.kill(actor)  
-        gc.collect()  
 
 
     # cast

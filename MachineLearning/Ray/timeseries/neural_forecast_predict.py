@@ -403,7 +403,7 @@ for data_set, params in zip(dataset_list, pickle_list):
 
 
     # test data
-    test_df = generate_forecasting_df(df=tseries_df, **test_dict[data_set])
+    test_df = generate_forecasting_df(df=df, **test_dict[data_set])
 
 
     @ray.remote(num_gpus=0.5, num_cpus=0.5)
@@ -447,11 +447,14 @@ for data_set, params in zip(dataset_list, pickle_list):
             forecasts_future = self.model.predict(df=X_test).reset_index()
             forecasts = pd.concat([forecasts, forecasts_future], axis=0)
             self.results[feature_name] = forecasts
-        
-        def get_results(self):    
-            # concatenate all results  
-            all_results = pd.concat(self.results.values(), axis=0)  
-            return all_results  
+                
+        def get_results(self):      
+            # concatenate all results    
+            if self.results:  
+                all_results = pd.concat(self.results.values(), axis=0)    
+                return all_results    
+            else:  
+                return pd.DataFrame()
     
         def shutdown(self):  
             ray.actor.exit_actor()  
@@ -509,7 +512,7 @@ for data_set, params in zip(dataset_list, pickle_list):
     storage_df['prediction_high_80'] = storage_df['prediction_high_80'].astype(int)
     storage_df['feature_name'] = storage_df['feature_name'].astype('string')
     storage_df['project'] = storage_df['project'].astype('string')
-    storage_df['Date'] = storage_df['Date'].astype('string')
+    storage_df['date'] = storage_df['date'].astype('string')
     storage_df['monthYear'] = storage_df['monthYear'].astype('string')
 
     # drop

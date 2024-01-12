@@ -1,0 +1,34 @@
+name: my_forecast_env
+channels:
+  - conda-forge
+dependencies:
+  - python==3.10
+  - pip: 
+      - scikit-learn
+      - numpy
+      - pyarrow
+      - pandas
+      - azure-identity
+      - azure-keyvault-secrets
+      - azure-ai-ml
+      - azureml-core
+      - mlflow
+      - azureml-mlflow
+      - ray[air]
+      - azureml-dataset-runtime
+      - azure-storage-blob
+      - aiohttp
+      - asyncio
+      - nest-asyncio
+      - azure-storage-file-datalake
+      - azure-identity
+      - numba
+      - tabulate
+      - scikit-learn
+      - statsforecast
+      - datasetsforecast
+      - utilsforecast
+      - neuralforecast
+      - hyperopt
+      - gputil
+      - grpcio
