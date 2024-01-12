@@ -94,6 +94,18 @@ kubectl logs cpu-tuning-job-9phfq
 # prune rayjob
 kubectl delete rayjob cpu-tuning-job
 
-
 # stream logs
 kubectl logs -f gpu-predict-job-sj6m2
+
+# cron jobs
+kubectl get cronjobs
+
+# delete cron
+kubectl delete cronjob rayjob-scheduler-cronjob 
+
+# start immediate test
+kubectl create job --from=cronjob/rayjob-scheduler-cronjob rayjob-scheduler-manual-$(date +%s)
+
+
+# describe
+kubectl describe cronjob rayjob-scheduler-cronjob

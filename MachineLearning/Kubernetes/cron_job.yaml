@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rayjob-scheduler-cronjob
+  namespace: default
+spec:
+  schedule: "*/30 * * * *"  # Replace with your desired schedule
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: rayjob-scheduler-account
+          containers:
+          - name: rayjob-scheduler-container
+            image: chiemoadprd.azurecr.io/license_forecast:latest
+            # Remove the command field since ENTRYPOINT is used in the Dockerfile
+            # If you need to pass arguments to your script, uncomment and use the args array
+            # args: ["arg1", "arg2"]
+            # Include any required environment variables, volume mounts, or other configurations
+          restartPolicy: Never  # Define how to handle container failures

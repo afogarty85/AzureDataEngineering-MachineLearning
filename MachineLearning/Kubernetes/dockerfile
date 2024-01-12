@@ -4,12 +4,12 @@ FROM mcr.microsoft.com/azureml/openmpi4.1.0-cuda11.8-cudnn8-ubuntu22.04:latest
 # Set a working directory (optional)
 WORKDIR /app
 
-# Install Python 3.10 (if needed)
+# Install Python 3.10 (if needed) and other dependencies
 RUN apt-get update && \
     apt-get install -y software-properties-common && \
     add-apt-repository ppa:deadsnakes/ppa && \
     apt-get update && \
-    apt-get install -y python3.10 python3.10-distutils && \
+    apt-get install -y python3.10 python3.10-distutils curl && \
     ln -s /usr/bin/python3.10 /usr/local/bin/python3 && \
     ln -s /usr/bin/python3.10 /usr/local/bin/python
 
@@ -25,11 +25,25 @@ RUN pip install scikit-learn numpy pyarrow pandas azure-identity \
     nest-asyncio azure-storage-file-datalake numba tabulate statsforecast \
     datasetsforecast utilsforecast neuralforecast hyperopt gputil grpcio
 
-# Copy the Python scripts from your local directory to the /app directory in the container
+# Download and install kubectl
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    chmod +x kubectl && \
+    mv kubectl /usr/local/bin/
+
+# Copy the Python scripts and RayJob configs from your local directory to the /app directory in the container
 COPY src /app
+COPY my_jobs /app/my_jobs/
 
-# Define an entry point for the container
-# ENTRYPOINT ["python", "/app/your_main_script.py"]
 
-# Alternatively, if you need to run a script using a command line argument, you can use CMD instead
-# CMD ["python", "/app/your_main_script.py", "--arg1", "value1"]
+# Copy the run-jobs.sh script into the container and make it executable
+COPY run-jobs.sh /app
+
+# Remove carriage return characters  
+RUN sed -i 's/\r$//' run-jobs.sh  
+RUN chmod +x /app/run-jobs.sh
+
+# Set the run-jobs.sh script as the entry point
+ENTRYPOINT ["/app/run-jobs.sh"]
+
+# Alternatively, you could use CMD if you prefer to pass arguments at runtime
+# CMD ["/app/run-jobs.sh"]
