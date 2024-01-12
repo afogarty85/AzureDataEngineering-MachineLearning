@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-storage-claim
+  namespace: default # change this to the appropriate namespace if not default
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile # or another StorageClass name if you have a custom one
+  resources:
+    requests:
+      storage: 5Gi

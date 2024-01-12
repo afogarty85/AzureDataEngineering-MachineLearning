@@ -1,0 +1,35 @@
+# Use the provided base image
+FROM mcr.microsoft.com/azureml/openmpi4.1.0-cuda11.8-cudnn8-ubuntu22.04:latest
+
+# Set a working directory (optional)
+WORKDIR /app
+
+# Install Python 3.10 (if needed)
+RUN apt-get update && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get update && \
+    apt-get install -y python3.10 python3.10-distutils && \
+    ln -s /usr/bin/python3.10 /usr/local/bin/python3 && \
+    ln -s /usr/bin/python3.10 /usr/local/bin/python
+
+# Install pip for Python 3.10
+RUN apt-get install -y python3.10-venv && \
+    python3.10 -m ensurepip && \
+    python3.10 -m pip install --upgrade pip
+
+# Install the required Python packages using pip
+RUN pip install scikit-learn numpy pyarrow pandas azure-identity \
+    azure-keyvault-secrets azure-ai-ml azureml-core mlflow azureml-mlflow \
+    ray[air]==2.9.0 azureml-dataset-runtime azure-storage-blob aiohttp asyncio \
+    nest-asyncio azure-storage-file-datalake numba tabulate statsforecast \
+    datasetsforecast utilsforecast neuralforecast hyperopt gputil grpcio
+
+# Copy the Python scripts from your local directory to the /app directory in the container
+COPY src /app
+
+# Define an entry point for the container
+# ENTRYPOINT ["python", "/app/your_main_script.py"]
+
+# Alternatively, if you need to run a script using a command line argument, you can use CMD instead
+# CMD ["python", "/app/your_main_script.py", "--arg1", "value1"]

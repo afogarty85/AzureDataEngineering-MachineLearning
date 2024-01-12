@@ -1,0 +1,92 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: cpu-predict-job
+spec:
+  entrypoint: python /app/stats_forecast_predict.py
+  shutdownAfterJobFinishes: true
+
+  rayClusterSpec:
+    rayVersion: '2.9.0'
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: '0.0.0.0'
+      template:
+        spec:
+          nodeSelector:
+            hardware: highcpu
+          containers:
+            - name: ray-head
+              image: chiemoadprd.azurecr.io/license_forecast:latest
+              imagePullPolicy: Always
+              ports:
+                - containerPort: 6379
+                  name: gcs-server
+                - containerPort: 8265
+                  name: dashboard
+                - containerPort: 10001
+                  name: client
+              resources:
+                requests:
+                  cpu: "3"
+                limits:
+                  cpu: "4"
+              env:
+                - name: AZURE_TENANT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: my-service-principal-secret
+                      key: tenantId
+                - name: AZURE_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: my-service-principal-secret
+                      key: clientId
+                - name: AZURE_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: my-service-principal-secret
+                      key: clientSecret
+    workerGroupSpecs:
+      - replicas: 98
+        groupName: small-group
+        rayStartParams: {}
+        template:
+          spec:
+            nodeSelector:
+              hardware: highcpu
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                    - key: "ray.io/group"
+                      operator: In
+                      values:
+                      - small-group
+                  topologyKey: "kubernetes.io/hostname"
+            containers:
+              - name: ray-worker
+                image: chiemoadprd.azurecr.io/license_forecast:latest
+                imagePullPolicy: Always
+                resources:
+                  requests:
+                    cpu: "0.5"
+                  limits:
+                    cpu: "4"
+                env:
+                  - name: AZURE_TENANT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: my-service-principal-secret
+                        key: tenantId
+                  - name: AZURE_CLIENT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: my-service-principal-secret
+                        key: clientId
+                  - name: AZURE_CLIENT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: my-service-principal-secret
+                        key: clientSecret

@@ -1,0 +1,105 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: gpu-tuning-job
+spec:
+  entrypoint: python /app/neural_forecast_tune.py
+  shutdownAfterJobFinishes: true
+  rayClusterSpec:
+    rayVersion: '2.9.0'
+    headGroupSpec:
+      rayStartParams:
+        num-cpus: "14" # Assuming you want to allocate 14 CPUs to each worker  
+        num-gpus: "1"  # Assuming you want to allocate 1 GPU to each worker        
+        dashboard-host: '0.0.0.0'
+      template:
+        spec:
+          affinity: # Use node affinity to ensure the head pod is scheduled on a GPU node
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: hardware
+                    operator: In
+                    values:
+                    - gpu
+          containers:
+            - name: ray-head
+              image: chiemoadprd.azurecr.io/license_forecast:latest
+              imagePullPolicy: Always
+              ports:
+                - containerPort: 6379
+                  name: gcs-server
+                - containerPort: 8265
+                  name: dashboard
+                - containerPort: 10001
+                  name: client
+              resources:
+                requests:
+                  cpu: "14" # Reserve most of the node's CPUs for the head pod
+                  nvidia.com/gpu: "1"
+                limits:
+                  cpu: "14"
+                  nvidia.com/gpu: "1"
+              env:
+                - name: AZURE_TENANT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: my-service-principal-secret
+                      key: tenantId
+                - name: AZURE_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: my-service-principal-secret
+                      key: clientId
+                - name: AZURE_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: my-service-principal-secret
+                      key: clientSecret
+              volumeMounts:
+                - mountPath: "/mnt/tuning_files"
+                  name: tuning-storage
+    workerGroupSpecs:
+      - replicas: 3
+        groupName: gpu-group
+        rayStartParams:
+          num-cpus: "14" # Assuming you want to allocate 14 CPUs to each worker  
+          num-gpus: "1"  # Assuming you want to allocate 1 GPU to each worker  
+        template:
+          spec:
+            affinity: # Use node affinity and pod anti-affinity to spread workers across GPU nodes
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: hardware
+                      operator: In
+                      values:
+                      - gpu
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                    - key: app # Use an appropriate label key that exists on your pods
+                      operator: In
+                      values:
+                      - ray-worker
+                  topologyKey: "kubernetes.io/hostname"
+            containers:
+              - name: ray-worker
+                image: chiemoadprd.azurecr.io/license_forecast:latest
+                imagePullPolicy: Always
+                resources:
+                  requests:
+                    cpu: "14" # Reserve most of the node's CPUs for each worker pod
+                    nvidia.com/gpu: "1"
+                  limits:
+                    cpu: "14"
+                    nvidia.com/gpu: "1"
+                env:
+                  - name: AZURE_TENANT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: my-service-principal-secret
+                        key: tenantId
