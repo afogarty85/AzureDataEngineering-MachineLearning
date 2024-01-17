@@ -13,7 +13,7 @@ rules:
 # Permissions for RayJob resources
 - apiGroups: ["ray.io"]  # Confirmed API group for RayJob
   resources: ["rayjobs"]
-  verbs: ["create", "delete", "get", "list", "update", "patch"]
+  verbs: ["create", "delete", "get", "list", "update", "patch", "watch"]
 # Permissions for Kubernetes Job resources
 - apiGroups: ["batch"]
   resources: ["jobs"]

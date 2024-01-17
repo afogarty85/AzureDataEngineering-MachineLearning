@@ -1,0 +1,8 @@
+az login
+az acr login --name x
+az account set --subscription x
+
+sudo docker build -t license_forecast:v2 . && docker tag license_forecast:v2 chiemoadprd.azurecr.io/license_forecast:v2 && docker push chiemoadprd.azurecr.io/license_forecast:v2
+
+
+sudo docker build -t license_forecast:v2 . && docker tag license_forecast:v2 chiemoadprd.azurecr.io/license_forecast:v2 && docker push chiemoadprd.azurecr.io/license_forecast:v2 && docker tag license_forecast:v2 chiemoadprd.azurecr.io/license_forecast:latest && docker push chiemoadprd.azurecr.io/license_forecast:latest

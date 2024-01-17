@@ -386,7 +386,6 @@ pickle_bytes = [fetch(file_path, 'chiemoaddevfs', TENANT, CLIENTID, CLIENTSECRET
 
 dataset_list = ["All", "Braga", "Kingsgate", "Ruby Mountain"]
 
-local_mnt_path = Path("/mnt/tuning_files")
 local_mnt_path = "/mnt/tuning_files"
 
 
@@ -442,7 +441,7 @@ for i, data_set in enumerate(dataset_list):
     test_df = generate_forecasting_df(df=df, **test_dict[data_set])
 
 
-    @ray.remote(num_gpus=0.5, num_cpus=0.5)
+    @ray.remote(num_gpus=0.5, num_cpus=0.5, max_restarts=3)
     class BatchPredictor:
         def __init__(self, model_path, data, max_retries=3, retry_delay=5):  
             self.model_path = model_path
@@ -502,7 +501,7 @@ for i, data_set in enumerate(dataset_list):
     # storage model / df  
     test_df_ref = ray.put(test_df)  
     
-    feature_names = test_df['unique_id'].unique()    
+    feature_names = test_df['unique_id'].unique()
     num_gpus = 4  
     
     # create one actor per GPU 
@@ -523,7 +522,7 @@ for i, data_set in enumerate(dataset_list):
 
     # gather
     final_results = ray.get(retrieval_tasks)  
-    storage_df = pd.concat(final_results, axis=0) 
+    storage_df = pd.concat(final_results, axis=0).reset_index(drop=True)
 
     # kill actors    
     for actor in actors:  

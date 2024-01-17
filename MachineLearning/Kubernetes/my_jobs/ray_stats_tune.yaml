@@ -71,7 +71,7 @@ spec:
                 imagePullPolicy: Always
                 resources:
                   requests:
-                    cpu: "0.5"
+                    cpu: "3"
                   limits:
                     cpu: "4"
                 env:

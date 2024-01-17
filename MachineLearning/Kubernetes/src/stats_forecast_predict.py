@@ -394,7 +394,7 @@ for i, data_set in enumerate(dataset_list):
                 "AutoETS": AutoETS,
                 "AutoTheta": AutoTheta}
 
-    @ray.remote(num_cpus=1)
+    @ray.remote(num_cpus=1, max_restarts=3)
     class BatchPredictor:
         def __init__(self, data, params, model_list):  
             self.results = {}
@@ -407,7 +407,7 @@ for i, data_set in enumerate(dataset_list):
             print(f"Now on feature: {feature_name}")
 
             # get model
-            best_model_config = self.model_list.get(self.params[feature_name]['model'])()
+            best_model_config = self.model_list.get(self.params[feature_name]['model'])(season_length=self.params[feature_name]['params']['season_length'])
 
             # get model str
             model_str = str(best_model_config)
@@ -460,7 +460,6 @@ for i, data_set in enumerate(dataset_list):
 
             # forecast
             forecasts_future = sf.forecast(h=horizon, level=[80]).reset_index()  
-            print(forecasts_future)
 
             # undo constant
             forecasts_future[model_str] -= 10
@@ -529,7 +528,7 @@ for i, data_set in enumerate(dataset_list):
 
     # gather
     final_results = ray.get(retrieval_tasks)  
-    storage_df = pd.concat(final_results, axis=0) 
+    storage_df = pd.concat(final_results, axis=0).reset_index(drop=True)
 
     # kill actors    
     for actor in actors:  

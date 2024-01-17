@@ -4,7 +4,7 @@ metadata:
   name: rayjob-scheduler-cronjob
   namespace: default
 spec:
-  schedule: "*/30 * * * *"  # Replace with your desired schedule
+  schedule: "0 7 * * 0"  # Every Sunday at 07:00 AM UTC (02:00 AM EST) 
   jobTemplate:
     spec:
       template:

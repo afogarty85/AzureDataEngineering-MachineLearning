@@ -387,7 +387,7 @@ def evaluate_models_with_cv(
     }
     return mean_results_per_model
 
-@ray.remote
+@ray.remote(num_cpus=1, max_retries=-1)
 def train_and_evaluate_fold(
     model: _TS,
     df: pd.DataFrame,
@@ -424,7 +424,7 @@ def generate_configurations(search_space: Dict[Type[_TS], Dict[str, list]]) -> _
             yield model(**dict(zip(kwargs, configuration)))  
   
   
-@ray.remote  
+@ray.remote(num_cpus=1, max_retries=-1)
 def evaluate_search_space_with_cv(
     search_space: Dict[Type[_TS], Dict[str, list]],  
     df: pd.DataFrame,  
@@ -502,7 +502,7 @@ test_dict = {
               }
 
 
-dataset_list = ["Braga", "Kingsgate", "Ruby Mountain", "All"]
+dataset_list = ["All", "Braga", "Kingsgate", "Ruby Mountain"]
 
 
 for data_set in dataset_list:
@@ -544,9 +544,9 @@ for data_set in dataset_list:
         sub_df = tseries_df.query(f"unique_id == '{feature}'")  
         future = evaluate_search_space_with_cv.remote(
             search_space={  
-                AutoARIMA: {"season_length": [7, 15, 20, 30, 40, 60]},  
-                AutoETS: {"season_length":  [7, 15, 20, 30, 40, 60]},  
-                AutoTheta: {"season_length":  [7, 15, 20, 30, 40, 60]},  
+                AutoARIMA: {"season_length": [3, 7, 14, 21, 28, ]},  
+                AutoETS: {"season_length":  [3, 7, 14, 21, 28, ]},  
+                AutoTheta: {"season_length":  [3, 7, 14, 21, 28, ]},  
             },  
             df=sub_df,  
             label_column="y",  
