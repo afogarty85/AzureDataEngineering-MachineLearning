@@ -15,7 +15,8 @@ from azure.identity import DefaultAzureCredential, ClientSecretCredential
 from statsforecast.models import *
 from statsforecast import StatsForecast
 import io
-
+from datetime import datetime  
+  
 
 
 def write_file_to_datalake(account_name, file_system_name, directory_name, file_name, data):
@@ -550,11 +551,19 @@ for i, data_set in enumerate(dataset_list):
     storage_df['prediction_low_80'] = storage_df['prediction_low_80'].clip(lower=0)
     storage_df['prediction_high_80'] = storage_df['prediction_high_80'].clip(lower=0)
 
+    # get date
+    date_string = datetime.now().strftime("%Y-%m-%d") + '_'
+
+    # timestamp the preds
+    storage_df['inference_as_of'] = datetime.now().strftime("%Y-%m-%d")
+
+
+
     # save
     write_file_to_datalake(account_name='moaddevlake',
                              file_system_name='chiemoaddevfs',
                              directory_name='TrainingExport/LicenseForecast/LicenseForecast_Stats_Predict',
-                             file_name=f'{file_name}',
+                             file_name=f'{date_string + file_name}',
                              data=storage_df)
 
 

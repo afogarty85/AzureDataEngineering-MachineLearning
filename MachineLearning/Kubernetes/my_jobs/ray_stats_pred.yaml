@@ -5,7 +5,6 @@ metadata:
 spec:
   entrypoint: python /app/stats_forecast_predict.py
   shutdownAfterJobFinishes: true
-
   rayClusterSpec:
     rayVersion: '2.9.0'
     headGroupSpec:
@@ -13,8 +12,15 @@ spec:
         dashboard-host: '0.0.0.0'
       template:
         spec:
+          tolerations: # Tolerations for the taint on the node pool
+            - key: "dedicated"
+              operator: "Equal"
+              value: "fastpool"
+              effect: "NoSchedule"
           nodeSelector:
             hardware: highcpu
+          imagePullSecrets:
+            - name: acr-secret
           containers:
             - name: ray-head
               image: chiemoadprd.azurecr.io/license_forecast:latest
@@ -28,9 +34,9 @@ spec:
                   name: client
               resources:
                 requests:
-                  cpu: "3"
+                  cpu: "15"
                 limits:
-                  cpu: "4"
+                  cpu: "16"
               env:
                 - name: AZURE_TENANT_ID
                   valueFrom:
@@ -48,11 +54,16 @@ spec:
                       name: my-service-principal-secret
                       key: clientSecret
     workerGroupSpecs:
-      - replicas: 98
+      - replicas: 24
         groupName: small-group
         rayStartParams: {}
         template:
           spec:
+            tolerations: # Tolerations for the taint on the node pool
+              - key: "dedicated"
+                operator: "Equal"
+                value: "fastpool"
+                effect: "NoSchedule"
             nodeSelector:
               hardware: highcpu
             affinity:
@@ -65,15 +76,17 @@ spec:
                       values:
                       - small-group
                   topologyKey: "kubernetes.io/hostname"
+            imagePullSecrets:
+              - name: acr-secret
             containers:
               - name: ray-worker
                 image: chiemoadprd.azurecr.io/license_forecast:latest
                 imagePullPolicy: Always
                 resources:
                   requests:
-                    cpu: "0.5"
+                    cpu: "15"
                   limits:
-                    cpu: "4"
+                    cpu: "16"
                 env:
                   - name: AZURE_TENANT_ID
                     valueFrom:

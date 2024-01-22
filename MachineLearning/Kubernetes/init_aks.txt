@@ -52,6 +52,20 @@ az aks update \
   --cluster-autoscaler-profile skip-nodes-with-system-pods=false skip-nodes-with-local-storage=false
 
 
+# taint
+az aks nodepool update \
+  --resource-group rg-azureml  \
+  --cluster-name tmchatkube \
+  --name fastpool \
+  --node-taints "dedicated=fastpool:NoSchedule"
+
+# taint
+az aks nodepool update \
+  --resource-group rg-azureml  \
+  --cluster-name tmchatkube \
+  --name gpupool \
+  --node-taints "dedicated=gpupool:NoSchedule"
+
 # create PVC
 kubectl apply -f pvc.yaml
 

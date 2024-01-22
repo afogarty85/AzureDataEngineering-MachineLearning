@@ -27,6 +27,7 @@ from azure.storage.filedatalake import DataLakeServiceClient
 from azure.identity import DefaultAzureCredential, ClientSecretCredential
 import io
 from pathlib import Path
+from datetime import datetime  
 
 
 
@@ -502,7 +503,7 @@ for i, data_set in enumerate(dataset_list):
     test_df_ref = ray.put(test_df)  
     
     feature_names = test_df['unique_id'].unique()
-    num_gpus = 4  
+    num_gpus = 1  
     
     # create one actor per GPU 
     actors = [BatchPredictor.remote(model_pathing, test_df_ref) for _ in range(num_gpus)]    
@@ -558,11 +559,18 @@ for i, data_set in enumerate(dataset_list):
     # drop
     storage_df = storage_df.drop(['PatchTST'], axis=1).reset_index(drop=True)
 
+    # get date
+    date_string = datetime.now().strftime("%Y-%m-%d") + '_'
+
+
+    # timestamp the preds
+    storage_df['inference_as_of'] = datetime.now().strftime("%Y-%m-%d")
+
     # save
     write_file_to_datalake(account_name='moaddevlake',
                              file_system_name='chiemoaddevfs',
                              directory_name='TrainingExport/LicenseForecast/LicenseForecast_NN_Predict',
-                             file_name=f'{file_name}',
+                             file_name=f'{date_string + file_name}',
                              data=storage_df)
 
 

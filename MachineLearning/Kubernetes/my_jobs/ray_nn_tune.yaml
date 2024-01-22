@@ -9,20 +9,20 @@ spec:
     rayVersion: '2.9.0'
     headGroupSpec:
       rayStartParams:
-        num-cpus: "14" # Assuming you want to allocate 14 CPUs to each worker  
-        num-gpus: "1"  # Assuming you want to allocate 1 GPU to each worker        
+        num-cpus: "14"
+        num-gpus: "1"
         dashboard-host: '0.0.0.0'
       template:
         spec:
-          affinity: # Use node affinity to ensure the head pod is scheduled on a GPU node
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                - matchExpressions:
-                  - key: hardware
-                    operator: In
-                    values:
-                    - gpu
+          tolerations: # Tolerations for the taint on the node pool
+            - key: "dedicated"
+              operator: "Equal"
+              value: "gpupool"
+              effect: "NoSchedule"
+          nodeSelector:
+            hardware: gpu
+          imagePullSecrets:
+            - name: acr-secret
           containers:
             - name: ray-head
               image: chiemoadprd.azurecr.io/license_forecast:latest
@@ -36,7 +36,7 @@ spec:
                   name: client
               resources:
                 requests:
-                  cpu: "14" # Reserve most of the node's CPUs for the head pod
+                  cpu: "14"
                   nvidia.com/gpu: "1"
                 limits:
                   cpu: "14"
@@ -64,19 +64,18 @@ spec:
       - replicas: 3
         groupName: gpu-group
         rayStartParams:
-          num-cpus: "14" # Assuming you want to allocate 14 CPUs to each worker  
-          num-gpus: "1"  # Assuming you want to allocate 1 GPU to each worker  
+          num-cpus: "14"
+          num-gpus: "1"
         template:
           spec:
-            affinity: # Use node affinity and pod anti-affinity to spread workers across GPU nodes
-              nodeAffinity:
-                requiredDuringSchedulingIgnoredDuringExecution:
-                  nodeSelectorTerms:
-                  - matchExpressions:
-                    - key: hardware
-                      operator: In
-                      values:
-                      - gpu
+            tolerations: # Tolerations for the taint on the node pool
+              - key: "dedicated"
+                operator: "Equal"
+                value: "gpupool"
+                effect: "NoSchedule"
+            nodeSelector:
+              hardware: gpu
+            affinity:
               podAntiAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:
                 - labelSelector:
@@ -86,13 +85,15 @@ spec:
                       values:
                       - ray-worker
                   topologyKey: "kubernetes.io/hostname"
+            imagePullSecrets:
+              - name: acr-secret
             containers:
               - name: ray-worker
                 image: chiemoadprd.azurecr.io/license_forecast:latest
                 imagePullPolicy: Always
                 resources:
                   requests:
-                    cpu: "14" # Reserve most of the node's CPUs for each worker pod
+                    cpu: "14"
                     nvidia.com/gpu: "1"
                   limits:
                     cpu: "14"
@@ -103,3 +104,13 @@ spec:
                       secretKeyRef:
                         name: my-service-principal-secret
                         key: tenantId
+                  - name: AZURE_CLIENT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: my-service-principal-secret
+                        key: clientId
+                  - name: AZURE_CLIENT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: my-service-principal-secret
+                        key: clientSecret

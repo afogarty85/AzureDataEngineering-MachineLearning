@@ -14,19 +14,15 @@ spec:
         dashboard-host: '0.0.0.0'
       template:
         spec:
-          affinity:
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                - matchExpressions:
-                  - key: hardware
-                    operator: In
-                    values:
-                    - gpu
-          volumes:
-            - name: tuning-storage
-              persistentVolumeClaim:
-                claimName: shared-storage-claim
+          tolerations: # Tolerations for the taint on the node pool
+            - key: "dedicated"
+              operator: "Equal"
+              value: "gpupool"
+              effect: "NoSchedule"
+          nodeSelector:
+            hardware: gpu
+          imagePullSecrets:
+            - name: acr-secret
           containers:
             - name: ray-head
               image: chiemoadprd.azurecr.io/license_forecast:latest
@@ -72,28 +68,25 @@ spec:
           num-gpus: "1"
         template:
           spec:
+            tolerations: # Tolerations for the taint on the node pool
+              - key: "dedicated"
+                operator: "Equal"
+                value: "gpupool"
+                effect: "NoSchedule"
+            nodeSelector:
+              hardware: gpu
             affinity:
-              nodeAffinity:
-                requiredDuringSchedulingIgnoredDuringExecution:
-                  nodeSelectorTerms:
-                  - matchExpressions:
-                    - key: hardware
-                      operator: In
-                      values:
-                      - gpu
               podAntiAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:
                 - labelSelector:
                     matchExpressions:
-                    - key: app
+                    - key: app # Use an appropriate label key that exists on your pods
                       operator: In
                       values:
                       - ray-worker
                   topologyKey: "kubernetes.io/hostname"
-            volumes:
-              - name: tuning-storage
-                persistentVolumeClaim:
-                  claimName: shared-storage-claim
+            imagePullSecrets:
+              - name: acr-secret
             containers:
               - name: ray-worker
                 image: chiemoadprd.azurecr.io/license_forecast:latest
@@ -121,6 +114,3 @@ spec:
                       secretKeyRef:
                         name: my-service-principal-secret
                         key: clientSecret
-                volumeMounts:
-                  - mountPath: "/mnt/tuning_files"
-                    name: tuning-storage

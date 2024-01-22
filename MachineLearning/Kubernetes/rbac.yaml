@@ -11,13 +11,21 @@ metadata:
   namespace: default
 rules:
 # Permissions for RayJob resources
-- apiGroups: ["ray.io"]  # Confirmed API group for RayJob
+- apiGroups: ["ray.io"]
   resources: ["rayjobs"]
   verbs: ["create", "delete", "get", "list", "update", "patch", "watch"]
 # Permissions for Kubernetes Job resources
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["create", "delete", "get", "list", "update", "patch", "watch"]
+# Permissions for Pods
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["create", "delete", "get", "list", "update", "patch", "watch"]
+# Permissions for Pods logs
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -18,3 +18,8 @@ spec:
             # args: ["arg1", "arg2"]
             # Include any required environment variables, volume mounts, or other configurations
           restartPolicy: Never  # Define how to handle container failures
+          nodeSelector:  # Specify the node pool label for scheduling
+            agentpool: agentpool
+          tolerations:  # Allow scheduling on nodes with the specified taint
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
