@@ -9,8 +9,6 @@ spec:
     rayVersion: '2.9.0'
     headGroupSpec:
       rayStartParams:
-        num-cpus: "14"
-        num-gpus: "1"
         dashboard-host: '0.0.0.0'
       template:
         spec:
@@ -63,9 +61,7 @@ spec:
     workerGroupSpecs:
       - replicas: 3
         groupName: gpu-group
-        rayStartParams:
-          num-cpus: "14"
-          num-gpus: "1"
+        rayStartParams: {}
         template:
           spec:
             tolerations: # Tolerations for the taint on the node pool
@@ -80,10 +76,10 @@ spec:
                 requiredDuringSchedulingIgnoredDuringExecution:
                 - labelSelector:
                     matchExpressions:
-                    - key: app # Use an appropriate label key that exists on your pods
+                    - key: "ray.io/group"
                       operator: In
                       values:
-                      - ray-worker
+                      - gpu-group
                   topologyKey: "kubernetes.io/hostname"
             imagePullSecrets:
               - name: acr-secret

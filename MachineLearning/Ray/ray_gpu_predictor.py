@@ -78,10 +78,9 @@ class TorchPredictor:
 
             return {
                 "y_pred": decode_out,
-                "task": batch["task"],
+                "y_true": batch["true_label"],
                 "input": decode_input,
-                "proba": transition_proba[:, 0],
-                "TicketId": batch['TicketId']
+                "proba": transition_proba[:, 0]
             }
 
 
@@ -96,8 +95,7 @@ def collate_fn(batch, args, tokenizer):
         return_tensors="pt",
     )
 
-    model_inputs["task"] = batch['task']
-    model_inputs['TicketId'] = batch['TicketId']
+    model_inputs["true_label"] = batch['label']
     return model_inputs
 
 
@@ -143,7 +141,7 @@ if __name__ == "__main__":
     test = test.map_batches(partial(collate_fn,
                                             args=args,
                                             tokenizer=tokenizer,
-                                            )).repartition(128)
+                                            )).repartition(96)
 
     # get preds
     predictions = test.map_batches(TorchPredictor(model=model, tokenizer=tokenizer, max_length=args.target_len),

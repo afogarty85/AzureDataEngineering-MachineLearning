@@ -10,6 +10,13 @@ kubectl create secret generic my-service-principal-secret \
   --from-literal=clientId='<client-id>' \
   --from-literal=clientSecret='<client-secret>'
 
+# add sp to kubernetes -- acr
+kubectl create secret docker-registry acr-secret \
+  --docker-server=chiemoadprd.azurecr.io \
+  --docker-username=client-id \
+  --docker-password=client-secret \
+  --namespace default
+
 
 # gen nodepool
 az aks nodepool add \
@@ -66,9 +73,17 @@ az aks nodepool update \
   --name gpupool \
   --node-taints "dedicated=gpupool:NoSchedule"
 
+
+# patch kuberay-operator to run on agentpool
+kubectl patch deployment kuberay-operator -p '{"spec":{"template":{"spec":{"nodeSelector":{"agentpool":"agentpool"}}}}}'
+kubectl patch deployment kuberay-operator -p '{"spec":{"template":{"spec":{"tolerations":[{"key":"CriticalAddonsOnly","operator":"Exists"}]}}}}'
+
 # create PVC
 kubectl apply -f pvc.yaml
 
+
+# delete pods with image pull errors
+for pod in $(kubectl get pods --no-headers | grep -E 'ErrImagePull|ImagePullBackOff' | awk '{print $1}'); do kubectl delete pod $pod; done
 
 
 # get pods

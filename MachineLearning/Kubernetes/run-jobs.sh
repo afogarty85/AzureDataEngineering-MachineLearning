@@ -11,6 +11,18 @@ delete_stuck_pods() {
   done  
 }  
 
+
+cleanup_completed_jobs() {  
+  local namespace=$1  
+  # Get all jobs with 'Completed' status  
+  local completed_jobs=$(kubectl get jobs -n "$namespace" -o jsonpath='{.items[?(@.status.succeeded==1)].metadata.name}')  
+  for job in $completed_jobs; do  
+    echo "Cleaning up completed job: $job"  
+    kubectl delete job "$job" -n "$namespace"  
+  done  
+}  
+
+
 # Function to delete a job if it exists
 delete_if_exists() {
   job_name=$1
@@ -110,7 +122,12 @@ PID_GPU=$!
 # Wait for the follow-up jobs to complete before exiting
 wait $PID_CPU
 wait $PID_GPU
-wait $PID_STUCK_PODS  
+
+# Cleanup completed jobs and their pods  
+cleanup_completed_jobs $namespace  
+  
+# Stop the stuck pod deletion script  
+kill $PID_STUCK_PODS 
 
 echo "All jobs have completed."
 
