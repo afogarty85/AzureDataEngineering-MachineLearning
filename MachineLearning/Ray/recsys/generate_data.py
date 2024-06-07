@@ -31,7 +31,10 @@ def generate_inversions(df, group_key):
       
     # Loop through each group and reverse the order of rows  
     for indices in grouped.values():  
-        if len(indices) >= 2:  # Only consider groups with size 2 or greater  
+        if len(indices) >= 2:  # Only consider groups with size 2 or greater
+            if df.iloc[indices]['MinutesInProduction'].sum() == 0:
+                # lets not add in even more 0 repairs
+                continue
             inverted_df_list.append(df.iloc[indices[::-1]])  
       
     # Concatenate all inverted dataframes  
@@ -49,7 +52,7 @@ def specialization_entropy(error_codes):
 def generate_window_slices(df, group_key, window_size=2):
     ''' apply before feature engineering '''
     # Ensure the DataFrame is sorted within each group  
-    df = df.sort_values(by=[group_key] + (['time'] if 'time' in df.columns else []))  
+    df = df.sort_values(by=[group_key] + (['CreatedDate'] if 'CreatedDate' in df.columns else []) )  
   
     # Compute the group sizes and filter out those groups with size less than or equal to window_size  
     group_sizes = df.groupby(group_key).size()  
@@ -86,8 +89,12 @@ df = pd.read_parquet('./data/azrepair_rl.parquet',
                           'SP6RootCaused', 'MsfNumber',
                           'FirstTimeStamp', 'KickedFlag', 'WorkEndDate',
                           'UserUpdatedBy', 'TicketAgility', 'TopFCHops',
+                          'Censored', 'DCMStatesDuringTicket',
                       ])
 
+df.query("ResourceId == 'e329945a-ef85-44e4-bbae-a51d3499b2d4' ")
+df.query("MinutesInProduction.isna()")['ResourceId'].sample(n=2)
+point_wise = True  # False for pairwise
 
 
 # Limited Processing
@@ -98,7 +105,6 @@ df['CreatedDate'] = pd.to_datetime(df['CreatedDate'], format='mixed', utc=True)
 df['WorkEndDate'] = pd.to_datetime(df['WorkEndDate'], format='mixed', utc=True)  
 df['FirstTimeStamp'] = pd.to_datetime(df['FirstTimeStamp'])
 
-
 # filter
 df = df.query("RobertsRules.notna() ")
 df = df[df['RobertsRules'].str.contains('Replace', na=False)]
@@ -106,12 +112,76 @@ df = df[df['RobertsRules'].str.contains('Replace', na=False)]
 # sort
 df = df.sort_values(by=['ResourceId', 'CreatedDate']).reset_index(drop=True)
 
+# drop multi-ticket repairs that get assigned same outcomes for same repair, faultcode
+df = df.drop_duplicates(subset=['ResourceId', 'FaultCode', 'MinutesInProduction', 'RobertsRules'])
+
+
+
+def find_chained_repairs(df):
+    df = df.copy()
+    # Compute the time differences within each group    
+    df['time_diff_forward'] = df.groupby('ResourceId')['CreatedDate'].diff(-1).abs()    
+    df['time_diff_backward'] = df.groupby('ResourceId')['CreatedDate'].diff().abs()    
+        
+    # Set the sequence flag if the time difference is less than or equal to 24 hours    
+    df['sequence_flag'] = ((df['time_diff_forward'] <= pd.Timedelta(hours=24)) |    
+                        (df['time_diff_backward'] <= pd.Timedelta(hours=24))).astype(int)    
+        
+    # Drop the temporary columns used for computing differences    
+    df.drop(columns=['time_diff_forward', 'time_diff_backward'], inplace=True)    
+
+    # Compute the backward time differences within each group  
+    df['time_diff_backward'] = df.groupby('ResourceId')['CreatedDate'].diff()  
+    
+    # Identify where a new sequence should start  
+    new_sequence = (df['time_diff_backward'] > pd.Timedelta(hours=24)) | df['time_diff_backward'].isnull()  
+    
+    # Cumulatively sum the new_sequence flags to get unique sequence identifiers, per 'ResourceId'  
+    df['sequence_id'] = new_sequence.groupby(df['ResourceId']).cumsum()  
+    
+    # Drop the temporary column used for computing differences  
+    df.drop(columns=['time_diff_backward'], inplace=True)  
+    return df
+
+# find sequences
+df = find_chained_repairs(df)
+
+# go json
+df['RobertsRules'] = df['RobertsRules'].map(json.loads)  
+
+# combine JSON arrays in RobertsRules  
+def combine_jsons(series):  
+    combined_json_array = []  
+    for json_array in series:  
+        combined_json_array.extend(json_array)  
+    return combined_json_array  
+
+# filter
+df_sequences = df[df['sequence_flag'] == 1]  
+
+# combine jsons
+combined_jsons = df_sequences.groupby(['ResourceId', 'sequence_id'])['RobertsRules'] \
+                            .apply(combine_jsons) \
+                            .reset_index(name='CombinedRobertsRules')  
+  
+# merge to main
+df = df.merge(combined_jsons, on=['ResourceId', 'sequence_id'], how='left')  
+  
+# rows where sequence_flag == 1, replace RobertsRules with the CombinedRobertsRules  
+df.loc[df['sequence_flag'] == 1, 'RobertsRules'] = df['CombinedRobertsRules']  
+  
+# drop all but the last row of each group where sequence_flag == 1  
+df = df.drop_duplicates(subset=['ResourceId', 'sequence_id'], keep='last') \
+        .drop(columns=['CombinedRobertsRules'])
+
 # Fill missing values
 df['MinutesInProduction'] = df['MinutesInProduction'].fillna(0)  
 
 # clean
 df['TopFCHops'] = df['TopFCHops'].replace('', np.nan)
 
+# tends to be tickets resolved today and mtx not yet updated:4
+df = df.query("Censored.notna()").reset_index(drop=True)  # why 53 obs with nan?
 
 # stateless transformations
 # ====================================================
@@ -120,7 +190,7 @@ df['TopFCHops'] = df['TopFCHops'].replace('', np.nan)
 df['DeviceAge'] = (df['CreatedDate'] - df['FirstTimeStamp']).dt.total_seconds() / 3600
 
 # sev repair
-df['SevRepair'] = df['RobertsRules'].str.contains("Motherboard|CPU|GPU|FPGA").astype(int)  
+df['SevRepair'] = df['RobertsRules'].astype('string').str.contains("Motherboard|CPU|GPU|FPGA").astype(int)  
 
 # boolean column encode 
 df['SP6RootCaused'] = df['SP6RootCaused'].map({"true": 1, "false": 0}).fillna(0)  
@@ -129,8 +199,12 @@ df['SP6RootCaused'] = df['SP6RootCaused'].map({"true": 1, "false": 0}).fillna(0)
 with open('/mnt/c/Users/afogarty/Desktop/AZRepairRL/data/RobertsRules_embeddings.pickle', 'rb') as handle:
     embedding_dict = pickle.load(handle)
 
+# go str
+df['RobertsRules'] = df['RobertsRules'].map(lambda x: json.dumps(x, separators=(',', ':')))  
+
 # dense rep
-df['RobertsRulesEmbeddings'] = df['RobertsRules'].map(embedding_dict)
+df['RobertsRulesEmbeddings'] = df['RobertsRules'].map(embedding_dict) # fails
+
 
 
 # stateless joins
@@ -270,9 +344,6 @@ def recur(df, init_parent, parents, DiscreteSkuMSFId=None,  parentChild=None, st
 
 # list of parents
 parents = server_df[['ID', 'DiscreteSkuMSFId']].drop_duplicates()['ID'].values
-server_df.query("DiscreteSkuMSFId == 'MSF-055010'")
-
-
 discrete_sku_msfs = server_df[['ID', 'DiscreteSkuMSFId']].drop_duplicates()['DiscreteSkuMSFId'].values
 
 # The worker function to be executed in parallel  
@@ -411,35 +482,30 @@ valid['test_split'] = 'valid'
 test['test_split'] = 'test'
 
 
-# generate inversions and slices
-inverted_data = generate_inversions(train, 'ResourceId')  
-window_slices_data = generate_window_slices(train, 'ResourceId', window_size=2)  
 
-# rename
-train = train.rename(columns={"ResourceId": "ResourceIdOriginal"})
-inverted_data = inverted_data.rename(columns={"ResourceId": "ResourceIdOriginal"})
-window_slices_data = window_slices_data.rename(columns={"ResourceId": "ResourceIdOriginal"})
+if point_wise:
+    # generate inversions and slices
+    inverted_data = generate_inversions(train, 'ResourceId')  
+    window_slices_data = generate_window_slices(train, 'ResourceId', window_size=2)  
 
-# label
-inverted_data['ResourceId'] = inverted_data['ResourceIdOriginal'] + '_inverted'  
-window_slices_data['ResourceId'] = window_slices_data['ResourceIdOriginal']  + '_window_slice'
-train['ResourceId'] = train['ResourceIdOriginal'] + '_full'
+    # rename
+    train = train.rename(columns={"ResourceId": "ResourceIdOriginal"})
+    inverted_data = inverted_data.rename(columns={"ResourceId": "ResourceIdOriginal"})
+    window_slices_data = window_slices_data.rename(columns={"ResourceId": "ResourceIdOriginal"})
 
-# give sequence label
-inverted_data['sequence_type'] = '_inverted'  
-window_slices_data['sequence_type'] = '_window_slice'
-train['sequence_type'] = '_full'
+    # label
+    inverted_data['ResourceId'] = inverted_data['ResourceIdOriginal'] + '_inverted'  
+    window_slices_data['ResourceId'] = window_slices_data['ResourceIdOriginal']  + '_window_slice'
+    train['ResourceId'] = train['ResourceIdOriginal'] + '_full'
 
-# join
-train = pd.concat([train, window_slices_data, inverted_data], axis=0).reset_index(drop=True)
-train.shape
-print("Generated train-test split")
+    # give sequence label
+    inverted_data['sequence_type'] = '_inverted'  
+    window_slices_data['sequence_type'] = '_window_slice'
+    train['sequence_type'] = '_full'
 
-# make copies of cols for later use non-transformed
-train['FaultCodeOriginal'] = train['FaultCode']
-train['DiscreteSkuMSFIdOriginal'] = train['DiscreteSkuMSFId']
-train['RobertsRulesOriginal'] = train['RobertsRules']
-train['TopFCHopsOriginal'] = train['TopFCHops']
+    # join
+    train = pd.concat([train, window_slices_data, inverted_data], axis=0).reset_index(drop=True)
+    print("Generated train-test split")
 
 
 # Stateful Device Transformations
@@ -512,7 +578,9 @@ def calculate_average_embedding(df, embedding_col='RobertsRulesEmbeddings'):
     non_null_embeddings = np.stack(df.drop_duplicates(subset=['RobertsRules']).dropna(subset=[embedding_col])[embedding_col])  
     average_embedding = non_null_embeddings.mean(axis=0).tolist()  
     return average_embedding  
-  
+
+
+
 def impute_null_embeddings(df, embedding_col='RobertsRulesEmbeddings', average_embedding=None):  
     df = df.copy()  
     if average_embedding is None:  
@@ -615,7 +683,7 @@ def device_pipeline(df, is_train=True, max_time_in_train=None, last_repair_count
         df = calculate_cumulative_average_transform(df, group_col, target_col, last_cumsum, last_count)  
     
     df = truncate_embeddings(df)  # Truncate embeddings for both train and test sets
-    df = apply_entropy_scores(df, entropy_scores)  
+    df = apply_entropy_scores(df, entropy_scores)
     
     return df, max_time_in_train, average_embedding, last_fc_counts, last_cumsum, last_count, last_common_actions, entropy_scores
 
@@ -977,7 +1045,7 @@ cat_cols = ['FaultCode',
             ] + ['BusinessGroup', 'CFMAirFlow', 'Depth', 'Weight', 'TargetWorkload', 'Width']
 
 binary_cols = [
-    'SP6RootCaused', 'SevRepair', 'KickedFlag', 'InFleet',
+    'SP6RootCaused', 'SevRepair', 'KickedFlag', 'InFleet', 'Censored',
 ]
 cont_cols = ['DeviceAge', 'FCMSFEntropy',
              'NumBOMParts', 'NumBOMSubstitutes', 'MaxBOMDepth', 'NumBOMRows', 'NumBlades', 
@@ -1041,9 +1109,9 @@ embedding_size = 25  # Replace with the actual embedding size you want
 
 for column in cat_cols:  
     # Replace missing values with a unique string  
-    train[column].fillna('NAN_NULL', inplace=True)  
-    valid[column].fillna('NAN_NULL', inplace=True)  
-    test[column].fillna('NAN_NULL', inplace=True)  
+    train[column] = train[column].fillna('NAN_NULL')  
+    valid[column] = valid[column].fillna('NAN_NULL')  
+    test[column] = test[column].fillna('NAN_NULL')  
       
     # Convert all non-missing values to strings  
     train[column] = train[column].astype(str)  
@@ -1150,26 +1218,51 @@ test[label_cols] = log1p_scaler.transform(test[label_cols])
   
 # Store the fitted transformer  
 scalers_dict['MinutesInProduction'] = log1p_scaler  
+
+
+# resort inversion
+# Identify the groups that contain "_inverted" in the specified column  
+groups_to_invert = train[train['ResourceId'].str.contains('_inverted')]['ResourceId'].unique()  
   
-
-
-# sort.. again
-train = train.sort_values(by=['ResourceId', 'CreatedDate']).reset_index(drop=True)
-valid = valid.sort_values(by=['ResourceId', 'CreatedDate']).reset_index(drop=True)
-test = test.sort_values(by=['ResourceId', 'CreatedDate']).reset_index(drop=True)
-
+# Create a boolean mask for rows that belong to groups that should be inverted  
+mask = train['ResourceId'].isin(groups_to_invert)  
+  
+# Invert the order of rows for groups that need inversion  
+train.loc[mask, 'GroupSortHelper'] = train[mask].groupby('ResourceId').cumcount(ascending=False)  
+train.loc[~mask, 'GroupSortHelper'] = train[~mask].groupby('ResourceId').cumcount()  
+  
+# Sort the DataFrame based on the helper column and GroupColumn  
+train = train.sort_values(by=['ResourceId', 'GroupSortHelper'])  
+  
+# Drop the helper column as it's no longer needed  
+train = train.drop(columns=['GroupSortHelper']).reset_index(drop=True)  
 
 
 # save
-train[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'ResourceIdOriginal', 'sequence_type', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings']] \
-                    .to_parquet('./data/seq_azrepair_train.parquet')
+if point_wise:
+    train[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'ResourceIdOriginal', 'sequence_type', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings']] \
+                        .to_parquet('./data/seq_azrepair_train.parquet')
 
-valid[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings']] \
-                    .to_parquet('./data/seq_azrepair_valid.parquet')
+    valid[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings']] \
+                        .to_parquet('./data/seq_azrepair_valid.parquet')
 
-test[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings' ]] \
-                    .to_parquet('./data/seq_azrepair_test.parquet')
+    test[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings' ]] \
+                        .to_parquet('./data/seq_azrepair_test.parquet')
+    
 
+
+
+if not point_wise:
+
+
+    train[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings']] \
+                        .to_parquet('./data/pairwise_azrepair_train.parquet')
+
+    valid[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings']] \
+                        .to_parquet('./data/pairwise_azrepair_valid.parquet')
+
+    test[cat_cols + binary_cols + cont_cols + label_cols + ['ResourceId', 'test_split', 'CreatedDate', 'RobertsRulesEmbeddings' ]] \
+                        .to_parquet('./data/pairwise_azrepair_test.parquet')    
 
 
 # Save scalers to a file  
@@ -1178,5 +1271,7 @@ joblib.dump(encoders_dict, '/mnt/c/Users/afogarty/Desktop/AZRepairRL/scalars_dic
 joblib.dump(imputers_dict, '/mnt/c/Users/afogarty/Desktop/AZRepairRL/scalars_dict/imputers_dict.joblib')  
 
 print(EMBEDDING_TABLE_SHAPES)
+
+
 
 
