@@ -241,6 +241,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
     
     # train steps
     num_train_steps_per_epoch = config['train_ds_len'] // ((accelerator.num_processes * config['batch_size_per_device']))
+    print(f"Train Len: {config['train_ds_len']} | Num Workers; {accelerator.num_processes} | Batch Size: {config['batch_size_per_device']} ")
     num_eval_steps_per_epoch = config['eval_ds_len'] // ((accelerator.num_processes * config['batch_size_per_device']))
 
     # model
@@ -403,12 +404,12 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
             interval_loss += loss.item()  
             interval_mrr += mrr  
   
-            if (step + 1) % 100 == 0:  
+            if (step + 1) % 20 == 0:  
                 if accelerator.is_main_process:  
-                    mlflow.log_metric('interval_loss', interval_loss / 100)  
-                    mlflow.log_metric('interval_contrastive_acc', interval_mrr / 100)  
+                    mlflow.log_metric('interval_loss', interval_loss / 20)  
+                    mlflow.log_metric('interval_contrastive_acc', interval_mrr / 20)  
                     accelerator.print(  
-                        f"Epoch {epoch}/{config['num_epochs']}, Batch {step+1}, Interval Loss: {interval_loss / 100:.4f}, Interval MRR: {interval_mrr / 100:.4f}")  
+                        f"Epoch {epoch}/{config['num_epochs']}, Batch {step+1}, Interval Loss: {interval_loss / 20:.4f}, Interval MRR: {interval_mrr / 20:.4f}")  
                     interval_loss = 0.0  
                     interval_mrr = 0.0  
 
@@ -514,6 +515,9 @@ if __name__ == '__main__':
         text_col=text_col,  
         split='train',  
     )  
+    print(f"Len Train Set: {len(train_set)} ") # 20547780
+
+
     test_set = GroupedDataFrameDataset(  
         pairs_path=support_path + '/pairs.parquet',  
         data_df=test_df,  
@@ -523,8 +527,8 @@ if __name__ == '__main__':
         label_cols=label_col,  
         text_col=text_col,  
         split='test',  
-    )  
-        
+    )
+
 
     # DataLoader with multiprocessing  
     print("Generating data loaders")  
@@ -534,9 +538,10 @@ if __name__ == '__main__':
         shuffle=True,  
         collate_fn=collate_fn,  
         pin_memory=True,  
-        num_workers=4,  
-        prefetch_factor=4  
-    )  
+        num_workers=5,  
+        prefetch_factor=2,
+        drop_last=True,
+    )
 
     eval_dataloader = DataLoader(  
         test_set,  
@@ -544,14 +549,14 @@ if __name__ == '__main__':
         shuffle=False,  
         collate_fn=collate_fn,  
         pin_memory=True,  
-        num_workers=4,  
-        prefetch_factor=4  
+        num_workers=5,  
+        prefetch_factor=2  
     )  
 
 
     # add count
-    config['train_ds_len'] = len(train_dataloader)
-    config['eval_ds_len'] = len(eval_dataloader)
+    config['train_ds_len'] = len(train_set)
+    config['eval_ds_len'] = len(test_set)
 
     # loop
     train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader)  
