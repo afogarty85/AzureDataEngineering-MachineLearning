@@ -451,11 +451,6 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
 
             print(metrics)
 
-
-
-
-
-
 if __name__ == '__main__':  
 
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -480,13 +475,17 @@ if __name__ == '__main__':
     print("Loading train data")
     train_df = ds.dataset(data_path, format="parquet")  
     train_df = train_df.to_table(filter=(ds.field('test_split') == 'train'))  
-    train_df = train_df.to_pandas()  
-    train_df = train_df.sort_values(by=['NodeId', 'LatestRecord'], ascending=False)
+    train_df = train_df.to_pandas()
+    train_df['NegativeOOSSpanTup'] = train_df['NegativeOOSSpan'].apply(tuple)
+    train_df = train_df.drop_duplicates(subset=['NodeId', 'QueryOOSSpan', 'NegativeOOSSpanTup'])    
+    train_df = train_df.sort_values(by=['NodeId', 'LatestRecord'], ascending=False).reset_index(drop=True)
 
     test_df = ds.dataset(data_path, format="parquet")  
     test_df = test_df.to_table(filter=(ds.field('test_split') == 'test'))  
-    test_df = test_df.to_pandas()  
-    test_df = test_df.sort_values(by=['NodeId', 'LatestRecord'], ascending=False)
+    test_df = test_df.to_pandas()
+    test_df['NegativeOOSSpanTup'] = test_df['NegativeOOSSpan'].apply(tuple)
+    test_df = test_df.drop_duplicates(subset=['NodeId', 'QueryOOSSpan', 'NegativeOOSSpanTup'])    
+    test_df = test_df.sort_values(by=['NodeId', 'LatestRecord'], ascending=False).reset_index(drop=True)
 
     # get sentence transformer
     shared_data_basepath = '/mnt/modelpath'
@@ -504,7 +503,7 @@ if __name__ == '__main__':
     # add to config
     config['sentence_transformer_model_path'] = sentence_transformer_model_path
 
-    # Precompute train and test data  
+    # build train and test data  
     train_set = GroupedDataFrameDataset(  
         pairs_path=support_path + '/pairs.parquet',  
         data_df=train_df,  
@@ -515,8 +514,7 @@ if __name__ == '__main__':
         text_col=text_col,  
         split='train',  
     )  
-    print(f"Len Train Set: {len(train_set)} ") # 20547780
-
+    print(f"Len Train Set: {len(train_set)} ")
 
     test_set = GroupedDataFrameDataset(  
         pairs_path=support_path + '/pairs.parquet',  
@@ -529,8 +527,7 @@ if __name__ == '__main__':
         split='test',  
     )
 
-
-    # DataLoader with multiprocessing  
+    # dataloaders
     print("Generating data loaders")  
     train_dataloader = DataLoader(  
         train_set,  
