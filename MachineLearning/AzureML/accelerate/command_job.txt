@@ -1,0 +1,71 @@
+# set up environment
+env = Environment(
+    image="mcr.microsoft.com/azureml/openmpi4.1.0-cuda11.8-cudnn8-ubuntu22.04",
+    conda_file="./src/conda_env.yaml",
+    name="my-env"
+)
+
+# set inputs
+inputs={
+    "train_files": Input(
+        type="uri_folder",
+        path="azureml://datastores/moaddevlake/paths/Delta/Gold/ML/FleetDebugTransformed",
+        mode='download',  # ro_mount vs download
+    ), 
+    "support_files": Input(
+        type="uri_folder",
+        path="azureml://datastores/chiemoaddev/paths/SupportFiles/FleetDebugEmbeddings",
+        mode='download',  # ro_mount vs download
+    ),     
+}
+
+# set outputs
+outputs={
+    "output_dir": Output(
+        type="uri_folder",
+        mode="rw_mount",
+        path="azureml://datastores/chiemoaddev/paths/TrainingExport/FleetDebugEmbeddings",
+    ),
+}
+
+# download settings
+env_var = {
+    "DATASET_MOUNT_ATTRIBUTE_CACHE_TTL": 60000,  # 60 seconds  
+    "DATASET_RESERVED_FREE_DISK_SPACE": 150 * 1024 * 1024,  # 150 MB  
+    "DATASET_MOUNT_CACHE_SIZE": 10 * 1024 * 1024 * 1024,  # 10 GB  
+    "DATASET_MOUNT_FILE_CACHE_PRUNE_THRESHOLD": 0.8,  # Start pruning when 80% full  
+    "DATASET_MOUNT_FILE_CACHE_PRUNE_TARGET": 0.5,  # Prune to 50% of cache size  
+    "DATASET_MOUNT_READ_BLOCK_SIZE": 8 * 1024 * 1024,  # 8 MB  
+    "DATASET_MOUNT_READ_BUFFER_BLOCK_COUNT": 64,  # Number of blocks to prefetch  
+    "DATASET_MOUNT_READ_THREADS": 4 * 40,  # Number of prefetching threads  
+    "DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED": True,  # Enable block-based caching  
+    "DATASET_MOUNT_MEMORY_CACHE_SIZE": 512 * 1024 * 1024,  # 512 MB  
+    "DATASET_MOUNT_BLOCK_FILE_CACHE_ENABLED": True,  # Enable block file caching  
+    "DATASET_MOUNT_BLOCK_FILE_CACHE_MAX_QUEUE_SIZE": 512 * 1024 * 1024,  # 512 MB  
+    "DATASET_MOUNT_BLOCK_FILE_CACHE_WRITE_THREADS": 2 * 40,  # Number of threads for writing cached blocks  
+    "DATASET_UNMOUNT_TIMEOUT_SECONDS": 30,  # Unmount timeout in seconds    
+    "RSLEX_DOWNLOADER_THREADS": 40*4,  # download  ; num_cores * 4
+    "AZUREML_DATASET_HTTP_RETRY_COUNT": 10,  # download
+}
+
+
+# define the command
+command_job = command(
+    experiment_name='FleetDebugEmbeddings',
+    code="./src",
+    command="""accelerate launch --multi_gpu --mixed_precision fp16 --num_machines 2 --num_processes 16 --machine_rank $NODE_RANK --main_process_ip $MASTER_ADDR --main_process_port $MASTER_PORT distributed_main.py --batch_size_per_device 32 --d_model 512 --nhead 8 --num_layers 5 --dim_feedforward 768 --num_epochs 5""",
+    environment=env,
+    instance_count=2,  # n clusters
+    environment_variables=env_var,
+    distribution={
+       "type": "PyTorch",
+        },   
+    compute="lowpriNVLINK",  # lowpriNVLINK // lowpriV100 // H100LowPri
+    shm_size='600g',
+    inputs=inputs,
+    outputs=outputs,
+    identity=ManagedIdentityConfiguration(), # grant storage blob read IAM to cluster SP
+)
+
+returned_job = ml_client.jobs.create_or_update(command_job)
+returned_job

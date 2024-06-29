@@ -1,0 +1,41 @@
+name: my_fleet_debug
+channels:
+  - pytorch
+  - nvidia/label/cuda-11.8.0
+  - conda-forge
+dependencies:
+  - python==3.10
+  - pytorch=2.0.1
+  - torchvision
+  - torchaudio
+  - ninja
+  - pip==23.0.1
+  - packaging
+  - setuptools
+  - pip: 
+      - scikit-learn
+      - numpy
+      - pyarrow
+      - pandas
+      - azure-identity
+      - azure-keyvault-secrets
+      - accelerate
+      - azure-ai-ml
+      - azureml-core
+      - sentencepiece
+      - rouge-score
+      - mlflow
+      - azureml-mlflow
+      - dm-tree
+      - ray[default] == 2.24.0
+      - tokenizers
+      - azureml-dataset-runtime
+      - azure-storage-blob
+      - smart_open[azure]
+      - transformers
+      - aiohttp
+      - asyncio
+      - nest-asyncio
+      - azure-storage-file-datalake
+      - hyperopt
+      - sentence-transformers
