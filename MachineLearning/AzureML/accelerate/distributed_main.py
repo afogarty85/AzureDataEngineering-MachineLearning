@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1, help="Seed.") 
     parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs to train for.")
     parser.add_argument("--output_dir", type=str, default='/mnt/c/Users/afogarty/Desktop/InfoNCE/checkpoints', help="Output dir.")
-    parser.add_argument("--lr", type=float, default=2.7079965316792954e-05, help="Learning rate to use.")
+    parser.add_argument("--lr", type=float, default=1e-05, help="Learning rate to use.")
     parser.add_argument("--dropout", type=float, default=0.134, help="Dropout rate")
     parser.add_argument("--weight_decay", type=float, default=0.001, help="Weight decay.")
     parser.add_argument("--noise_std", type=float, default=0.05, help="Embedding noise")
@@ -307,8 +307,9 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 losses.append(accelerator.gather(loss[None]))
   
                 mrr = mean_reciprocal_rank(query_pooled_output, positive_pooled_output, negative_pooled_output)  
-                mrrs.append(accelerator.gather(torch.tensor([mrr])))  
-  
+                mrr_tensor = torch.tensor(mrr, device=accelerator.device)
+                mrrs.append(accelerator.gather(mrr_tensor[None]))
+
         all_losses = torch.cat(losses)  
         all_mrrs = torch.cat(mrrs)  
         avg_eval_loss = all_losses.mean().item()  
@@ -476,15 +477,11 @@ if __name__ == '__main__':
     train_df = ds.dataset(data_path, format="parquet")  
     train_df = train_df.to_table(filter=(ds.field('test_split') == 'train'))  
     train_df = train_df.to_pandas()
-    train_df['NegativeOOSSpanTup'] = train_df['NegativeOOSSpan'].apply(tuple)
-    train_df = train_df.drop_duplicates(subset=['NodeId', 'QueryOOSSpan', 'NegativeOOSSpanTup'])    
     train_df = train_df.sort_values(by=['NodeId', 'LatestRecord'], ascending=False).reset_index(drop=True)
 
     test_df = ds.dataset(data_path, format="parquet")  
     test_df = test_df.to_table(filter=(ds.field('test_split') == 'test'))  
     test_df = test_df.to_pandas()
-    test_df['NegativeOOSSpanTup'] = test_df['NegativeOOSSpan'].apply(tuple)
-    test_df = test_df.drop_duplicates(subset=['NodeId', 'QueryOOSSpan', 'NegativeOOSSpanTup'])    
     test_df = test_df.sort_values(by=['NodeId', 'LatestRecord'], ascending=False).reset_index(drop=True)
 
     # get sentence transformer
