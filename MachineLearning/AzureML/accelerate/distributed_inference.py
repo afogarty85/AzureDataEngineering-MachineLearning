@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads.")
     parser.add_argument("--d_model", type=int, default=512, help="Embedding dimension size.")
     parser.add_argument("--num_layers", type=int, default=6, help="Number of encoder layers")
-    parser.add_argument("--dim_feedforward", type=int, default=1024, help="FFNN Size")
+    parser.add_argument("--dim_feedforward", type=int, default=768, help="FFNN Size")
     args = parser.parse_args()
 
     return args
@@ -256,7 +256,7 @@ def train_loop_per_worker(accelerator, config, inference_dataloader):
         with torch.no_grad():
 
             batch_node_ids = [x.get('node_id') for x in batch['query_group_info']]
-            batch_oos_span_ids = [x.get('oos_span') for x in batch['query_group_info']]
+            batch_oos_span_ids = [x.get('SpellNumber') for x in batch['query_group_info']]
 
             # Encode text data separately  
             encoded_texts = encode_text_data_separately(batch, st_model)  
@@ -364,7 +364,7 @@ if __name__ == '__main__':
     config['fine_tuned_model_path'] = support_path + '/epoch_4_state_dict.pt'
 
     # build train and test data
-    inference_set = GroupedInferenceDataset(
+    inference_set = OptimizedInferenceDataset(
         data_df=inference_df,
         cat_cols=cat_cols,
         binary_cols=binary_cols,

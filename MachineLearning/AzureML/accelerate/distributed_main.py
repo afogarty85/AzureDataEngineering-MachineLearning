@@ -82,7 +82,6 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)  
     np.random.seed(seed)  
 
-
 def collate_fn(batch):  
     def stack_and_pad(batch_data, key):  
         sequences = [item[key] for item in batch_data if item[key] is not None]  
@@ -174,6 +173,7 @@ def collate_fn(batch):
 
 
 
+
 def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader):  
     print("training_function called")  
     set_seed(config['seed'])  
@@ -229,15 +229,14 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
     
         # Stack the sequences to create a tensor of shape [batch_size, seq_len, n_features]  
         return torch.stack(padded_encoded_texts)  
-
-
-    
+      
     def encode_text_data_separately(batch, model):  
         encoded_texts = {}  
         encoded_texts['query'] = encode_text_in_batches(batch['query_data']['x_text'], batch['seq_lengths']['query'], model)  
         encoded_texts['positive'] = encode_text_in_batches(batch['positive_data']['x_text'], batch['seq_lengths']['positive'], model)  
         encoded_texts['negative'] = encode_text_in_batches(batch['negative_data']['x_text'], batch['seq_lengths']['negative'], model)  
         return encoded_texts  
+
     
     # train steps
     num_train_steps_per_epoch = config['train_ds_len'] // ((accelerator.num_processes * config['batch_size_per_device']))
@@ -271,8 +270,8 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
 
                 # Encode text data separately  
                 encoded_texts = encode_text_data_separately(batch, st_model)  
-                
-                # Manually extract data and insert into the model  
+
+                # Manually extract data and insert into the model for query data  
                 query_pooled_output = model(  
                     batch['query_data']['x_cat'],  
                     batch['query_data']['x_bin'],  
@@ -282,7 +281,8 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                     batch['query_masks']['x_bin'],  
                     batch['query_masks']['x_cont']  
                 )  
-                
+            
+                # Manually extract data and insert into the model for positive data  
                 positive_pooled_output = model(  
                     batch['positive_data']['x_cat'],  
                     batch['positive_data']['x_bin'],  
@@ -292,7 +292,8 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                     batch['positive_masks']['x_bin'],  
                     batch['positive_masks']['x_cont']  
                 )  
-                
+            
+                # Manually extract data and insert into the model for negative data  
                 negative_pooled_output = model(  
                     batch['negative_data']['x_cat'],  
                     batch['negative_data']['x_bin'],  
@@ -302,7 +303,8 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                     batch['negative_masks']['x_bin'],  
                     batch['negative_masks']['x_cont']  
                 ).view(batch_size, 4, 512)  
-                
+            
+                # Loss function  
                 loss = loss_fn(query_pooled_output, positive_pooled_output, negative_pooled_output)  
                 losses.append(accelerator.gather(loss[None]))
   
@@ -329,7 +331,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
     scheduler = get_cosine_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps)  
 
     # loss
-    loss_fn = InfoNCELoss(temperature=0.07)  
+    loss_fn = InfoNCELoss()  
   
     # prepare
     model, optimizer, train_dataloader, eval_dataloader, loss_fn, scheduler, st_model = accelerator.prepare(  
@@ -345,7 +347,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
         losses = []  
         interval_loss = 0.0  
         interval_mrr = 0.0  
-        
+               
         for step, batch in tqdm.tqdm(enumerate(train_dataloader), total=num_train_steps_per_epoch):
 
             optimizer.zero_grad()
@@ -355,7 +357,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
             
             # Encode text data separately  
             encoded_texts = encode_text_data_separately(batch, st_model)  
-            
+
             # Manually extract data and insert into the model for query data  
             query_pooled_output = model(  
                 batch['query_data']['x_cat'],  
@@ -366,7 +368,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 batch['query_masks']['x_bin'],  
                 batch['query_masks']['x_cont']  
             )  
-
+        
             # Manually extract data and insert into the model for positive data  
             positive_pooled_output = model(  
                 batch['positive_data']['x_cat'],  
@@ -377,7 +379,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 batch['positive_masks']['x_bin'],  
                 batch['positive_masks']['x_cont']  
             )  
-            
+        
             # Manually extract data and insert into the model for negative data  
             negative_pooled_output = model(  
                 batch['negative_data']['x_cat'],  
@@ -388,8 +390,8 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 batch['negative_masks']['x_bin'],  
                 batch['negative_masks']['x_cont']  
             ).view(batch_size, 4, 512)  
-
-            # loss fn
+                      
+            # Loss function  
             loss = loss_fn(query_pooled_output, positive_pooled_output, negative_pooled_output)  
             losses.append(accelerator.gather(loss[None]))
             
@@ -430,6 +432,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
         )  
   
         if accelerator.is_main_process:  
+            mlflow.log_metric('train_loss', train_epoch_loss)
             mlflow.log_metric('eval_loss', avg_eval_loss)  
             mlflow.log_metric('eval_mrr', avg_eval_mrr)  
 
@@ -443,14 +446,14 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
         }  
 
         accelerator.print(f"Saving the model locally at {config['output_dir']}")  
-        with TemporaryDirectory() as tmpdir:  
-            accelerator.wait_for_everyone()  
-            if accelerator.is_main_process:  
-                if accelerator.process_index == 0:  
-                    state = accelerator.get_state_dict(model)  
-                    accelerator.save(state, f"{tmpdir}/epoch_{epoch}_state_dict.pt")  
+        accelerator.wait_for_everyone()  
+        if accelerator.is_main_process:
+            print('Epoch Metrics', metrics)
+            if accelerator.process_index == 0:  
+                state = accelerator.get_state_dict(model)  
+                accelerator.save(state, config['output_dir'] + f"/epoch_{epoch}_state_dict.pt")  
 
-            print(metrics)
+            
 
 if __name__ == '__main__':  
 
@@ -533,7 +536,7 @@ if __name__ == '__main__':
         collate_fn=collate_fn,  
         pin_memory=True,  
         num_workers=5,  
-        prefetch_factor=2,
+        prefetch_factor=4,
         drop_last=True,
     )
 
@@ -544,7 +547,7 @@ if __name__ == '__main__':
         collate_fn=collate_fn,  
         pin_memory=True,  
         num_workers=5,  
-        prefetch_factor=2  
+        prefetch_factor=4  
     )  
 
 
