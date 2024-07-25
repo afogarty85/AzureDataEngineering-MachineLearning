@@ -2,7 +2,7 @@
 import os
 from azureml.core import Run
 import argparse
-from dataset import GroupedInferenceDataset
+from dataset import *
 import pandas as pd
 from config import *
 import pyarrow.dataset as ds  
@@ -16,7 +16,6 @@ from model import TabularTransformerEncoder
 from torch.nn.utils.rnn import pad_sequence  
 from sentence_transformers import SentenceTransformer  
 from torch.utils.data import DataLoader
-from torch.utils.data import DataLoader  
 
 
 
@@ -50,45 +49,18 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)  
     np.random.seed(seed)  
 
+
 def collate_fn(batch):  
-    def stack_and_pad(batch_data, key):  
-        sequences = [item[key] for item in batch_data if item[key] is not None]  
+
+    def stack_and_pad(sequences):  
         if not sequences:  
             return None, None  
-  
-        # Pad the sequences  
         padded_sequences = pad_sequence(sequences, batch_first=True)  
-  
-        # Create mask  
         mask = torch.zeros(padded_sequences.shape[:-1], dtype=torch.bool)  
         for i, seq in enumerate(sequences):  
             mask[i, :seq.size(0)] = True  
-  
         return padded_sequences, mask  
-  
-    def process_data(data_list):  
-        processed_data = {}  
-        masks = {}  
-        for key in ['x_cat', 'x_bin', 'x_cont', 'labels']:  
-            stacked_data, mask = stack_and_pad(data_list, key)  
-            if stacked_data is not None and mask is not None:  
-                processed_data[key] = stacked_data  
-                masks[key] = mask.unsqueeze(-1)  
-        return processed_data, masks  
-  
-    def transform_x_cat(x_cat, embedding_table_shapes):  
-        # Split x_cat into individual feature tensors  
-        x_cat_split = torch.split(x_cat, 1, dim=-1)  
-        x_cat_split = [tensor.squeeze(-1) for tensor in x_cat_split]  
-  
-        # Ensure the feature names match the embedding table shapes keys  
-        if len(x_cat_split) != len(embedding_table_shapes):  
-            raise ValueError("Mismatch between x_cat features and embedding table shapes")  
-  
-        # Create a dictionary to map feature names to tensors  
-        x_cat_dict = {feature: tensor for feature, tensor in zip(embedding_table_shapes.keys(), x_cat_split)}  
-        return x_cat_dict  
-  
+    
     def create_text_mask(text_data):  
         max_length = max(len(sequence) for sequence in text_data)  
         padded_sequences = []  
@@ -96,31 +68,45 @@ def collate_fn(batch):
             padded_sequence = sequence + ['Sentinel Value'] * (max_length - len(sequence))  
             padded_sequences.append(padded_sequence)  
         return padded_sequences  
+    
+    def transform_x_cat(x_cat):  
+        x_cat_split = torch.split(x_cat, 1, dim=-1)  
+        x_cat_split = [tensor.squeeze(-1) for tensor in x_cat_split]  
+        x_cat_dict = {feature: tensor for feature, tensor in zip(embedding_table_shapes.keys(), x_cat_split)}  
+        return x_cat_dict  
+
+    def process_data(data_list):  
+        processed_data = {}  
+        masks = {}  
+        for key in ['x_cat', 'x_bin', 'x_cont']:  
+            sequences = [item[key] for item in data_list if item[key] is not None]  
+            if sequences:  
+                stacked_data, mask = stack_and_pad(sequences)  
+                if stacked_data is not None and mask is not None:  
+                    processed_data[key] = stacked_data  
+                    masks[key] = mask.unsqueeze(-1)  
+        return processed_data, masks  
   
-    # Extract query pairs  
-    query_pairs = [item['query_data'] for item in batch]  
+    query_pairs = [item['query'] for item in batch]  
   
-    # Process the query pairs data  
     query_data, query_masks = process_data(query_pairs)  
+    if 'x_text' in query_pairs[0]:  
+        query_data['x_text'] = create_text_mask([item['x_text'] for item in query_pairs])  
   
-    # Include x_text as is (strings) and create masks  
-    query_data['x_text'] = create_text_mask([item['x_text'] for item in query_pairs])  
-    if 'x_cat' in query_data and query_data['x_cat'] is not None:  
-        query_data['x_cat'] = transform_x_cat(query_data['x_cat'], embedding_table_shapes)  
+    if 'x_cat' in query_data:  
+        query_data['x_cat'] = transform_x_cat(query_data['x_cat'])  
   
-    # Extract group info  
     query_group_info = [item['group_info'] for item in batch]  
   
-    # Include sequence length information  
     seq_lengths = {  
-        'query': query_data['x_cont'].size(1) if 'x_cont' in query_data else 0  
+        'query': query_data['x_cont'].size(1) if 'x_cont' in query_data else 0,  
     }  
   
     return {  
         'query_data': query_data,  
         'query_masks': query_masks,  
+        'query_group_info': query_group_info,  
         'seq_lengths': seq_lengths,  
-        'query_group_info': query_group_info  
     }  
 
 
@@ -249,20 +235,26 @@ def train_loop_per_worker(accelerator, config, inference_dataloader):
     model.eval()  
     embeddings = []
     node_ids = []
-    oos_span_ids = []
+    spell_numbers = []
+    seq_lens = []
+    repeat_offenders = []
+    fault_codes = []
             
     for step, batch in tqdm.tqdm(enumerate(inference_dataloader), total=num_train_steps_per_epoch):
 
         with torch.no_grad():
 
-            batch_node_ids = [x.get('node_id') for x in batch['query_group_info']]
-            batch_oos_span_ids = [x.get('SpellNumber') for x in batch['query_group_info']]
+            batch_node_ids = [x.get('NodeId') for x in batch['query_group_info']]
+            batch_spell_numbers = [x.get('SpellNumber') for x in batch['query_group_info']]
+            batch_sequence_lens = [x.get('SequenceLength') for x in batch['query_group_info']]
+            batch_repeat_offenders = [x.get('RepeatOffender') for x in batch['query_group_info']]
+            batch_fault_codes = [x.get('FaultCode') for x in batch['query_group_info']]
 
             # Encode text data separately  
             encoded_texts = encode_text_data_separately(batch, st_model)  
 
             # Manually extract data and insert into the model for query data  
-            query_pooled_output = model(  
+            query_pooled_output, query_logits = model(  
                 batch['query_data']['x_cat'],  
                 batch['query_data']['x_bin'],  
                 batch['query_data']['x_cont'],  
@@ -282,26 +274,42 @@ def train_loop_per_worker(accelerator, config, inference_dataloader):
     
             # Convert strings to tensors for gathering  
             batch_node_ids_tensor, max_node_id_length = encode_strings_as_tensors(batch_node_ids)  
-            batch_oos_span_ids_tensor = torch.tensor(batch_oos_span_ids, dtype=torch.long, device=accelerator.device)  
-    
+            batch_spell_numbers_tensor = torch.tensor(batch_spell_numbers, dtype=torch.long, device=accelerator.device)  
+            batch_seq_lens_tensor = torch.tensor(batch_sequence_lens, dtype=torch.long, device=accelerator.device)  
+            batch_repeat_offenders_tensor = torch.tensor(batch_repeat_offenders, dtype=torch.long, device=accelerator.device)  
+            batch_fault_codes_tensor = torch.tensor(batch_fault_codes, dtype=torch.long, device=accelerator.device)  
+
             # Move the tensors to the appropriate device before gathering  
             batch_node_ids_tensor = batch_node_ids_tensor.to(accelerator.device)  
     
             # Gather tensors across processes  
             gathered_node_ids_tensor = accelerator.gather(batch_node_ids_tensor)  
-            gathered_oos_span_ids_tensor = accelerator.gather(batch_oos_span_ids_tensor)  
+            gathered_spell_numbers_tensor = accelerator.gather(batch_spell_numbers_tensor)  
+            gathered_seq_lens_tensor = accelerator.gather(batch_seq_lens_tensor)  
+            gathered_batch_repeat_offenders_tensor = accelerator.gather(batch_repeat_offenders_tensor)  
+            gathered_batch_fault_codes_tensor = accelerator.gather(batch_fault_codes_tensor)  
     
             # Detach and move to CPU to avoid GPU memory overflow  
             gathered_node_ids_tensor = gathered_node_ids_tensor.detach().cpu()  
-            gathered_oos_span_ids_tensor = gathered_oos_span_ids_tensor.detach().cpu()  
-    
+            gathered_spell_numbers_tensor = gathered_spell_numbers_tensor.detach().cpu()  
+            gathered_seq_lens_tensor = gathered_seq_lens_tensor.detach().cpu()  
+            gathered_batch_repeat_offenders_tensor = gathered_batch_repeat_offenders_tensor.detach().cpu()  
+            gathered_batch_fault_codes_tensor = gathered_batch_fault_codes_tensor.detach().cpu()  
+
+
             # Convert tensors back to strings  
             gathered_node_ids = decode_tensors_to_strings(gathered_node_ids_tensor, max_node_id_length)  
-            gathered_oos_span_ids = gathered_oos_span_ids_tensor.tolist()  
-    
+            gathered_spell_numbers = gathered_spell_numbers_tensor.tolist()  
+            gathered_seq_lens = gathered_seq_lens_tensor.tolist()  
+            gathered_batch_repeat_offenders = gathered_batch_repeat_offenders_tensor.tolist()  
+            gathered_batch_fault_codes = gathered_batch_fault_codes_tensor.tolist()  
+
             # Flatten the list of lists  
             node_ids.extend(gathered_node_ids)  
-            oos_span_ids.extend(gathered_oos_span_ids)  
+            spell_numbers.extend(gathered_spell_numbers)  
+            seq_lens.extend(gathered_seq_lens)  
+            repeat_offenders.extend(gathered_batch_repeat_offenders)
+            fault_codes.extend(gathered_batch_fault_codes)
     
     # Concatenate all gathered embeddings  
     all_embeddings = torch.cat(embeddings).numpy()  
@@ -311,9 +319,12 @@ def train_loop_per_worker(accelerator, config, inference_dataloader):
         if accelerator.process_index == 0:  
             # Save embeddings to disk  
             df = pd.DataFrame({  
-                'node_id': node_ids,  
-                'oos_span_id': oos_span_ids,  
-                'embedding': list(all_embeddings)  
+                'NodeId': node_ids,  
+                'SpellNumber': spell_numbers, 
+                'SequenceLength': seq_lens, 
+                'RepeatOffender': repeat_offenders,
+                'FaultCode': fault_codes,
+                'Embedding': list(all_embeddings)  
             })  
             df.to_parquet(output_path + '/embeddings.parquet')  
 
@@ -342,9 +353,25 @@ if __name__ == '__main__':
     # load data
     print("Loading train data")
     inference_df = ds.dataset(data_path, format="parquet")  
-    inference_df = inference_df.to_table()  
+    #inference_df = inference_df.to_table(filter=(ds.field('test_split') == 'test')) # test
+    inference_df = inference_df.to_table() 
     inference_df = inference_df.to_pandas()
     inference_df = inference_df.sort_values(by=['NodeId', 'LatestRecord'], ascending=False).reset_index(drop=True)
+
+    # Create a unique identifier for each group  
+    inference_df['group_id'] = inference_df.groupby(['NodeId', 'SpellNumber']).ngroup()  
+    
+    # Shift the RepeatOffender column within each group  
+    inference_df['RepeatOffender_shifted'] = inference_df.groupby('group_id')['RepeatOffender'].shift(1)  
+    
+    # Calculate the RepeatOffenderFlag  
+    inference_df['RepeatOffenderFlag'] = (inference_df['RepeatOffender'] != inference_df['RepeatOffender_shifted']).astype(int)  
+    
+    # Set the first row in each group to 0  
+    inference_df.loc[inference_df.groupby('group_id').head(1).index, 'RepeatOffenderFlag'] = 0  
+    
+    # Drop the temporary columns  
+    inference_df.drop(columns=['group_id', 'RepeatOffender_shifted'], inplace=True) 
 
     # get sentence transformer
     shared_data_basepath = '/mnt/modelpath'
@@ -361,15 +388,14 @@ if __name__ == '__main__':
 
     # add to config
     config['sentence_transformer_model_path'] = sentence_transformer_model_path
-    config['fine_tuned_model_path'] = support_path + '/epoch_4_state_dict.pt'
+    config['fine_tuned_model_path'] = support_path + '/epoch_5_state_dict.pt'
 
     # build train and test data
-    inference_set = OptimizedInferenceDataset(
+    inference_set = RepeatOffenderInference(
         data_df=inference_df,
         cat_cols=cat_cols,
         binary_cols=binary_cols,
         cont_cols=numerical_cols,
-        label_cols=label_col,
         text_col=text_col,
     )
     print(f"Len Inference Set: {len(inference_set)} ")

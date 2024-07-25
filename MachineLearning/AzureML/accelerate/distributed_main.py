@@ -4,8 +4,8 @@ from azureml.core import Run
 import argparse
 from dataset import GroupedDataFrameDataset  
 import pandas as pd
-from config import *
 import pyarrow.dataset as ds  
+from config import *
 from huggingface_hub import snapshot_download
 import torch 
 import torch.nn.functional as F  
@@ -27,8 +27,9 @@ import time
 from torch.utils.data import DataLoader, Dataset  
 from accelerate import InitProcessGroupKwargs
 from datetime import timedelta
-
-
+import json
+from torch.utils.data.sampler import Sampler  
+import torch.nn as nn  
 
 
 
@@ -54,9 +55,69 @@ def parse_args():
     return args
 
 
+# Function to count occurrences of curriculum levels  
+def count_curriculum(data):  
+    counts = {'low': 0, 'medium': 0, 'high': 0}  
+    for item in data:  
+        if isinstance(item, list):  # For handling lists of lists in negative_group_info  
+            for sub_item in item:  
+                counts[sub_item['Curriculum']] += 1  
+        else:  
+            counts[item['Curriculum']] += 1  
+    return counts  
+
+class CurriculumSampler(Sampler):  
+    def __init__(self, dataset, num_epochs, epoch, low_ratio=0.7, medium_ratio=0.2, high_ratio=0.1):  
+        self.dataset = dataset  
+        self.num_epochs = num_epochs  
+        self.epoch = max(1, epoch)  # Ensure epoch is at least 1  
+        self.low_ratio = low_ratio  
+        self.medium_ratio = medium_ratio  
+        self.high_ratio = high_ratio  
+  
+    def set_epoch(self, epoch):  
+        self.epoch = epoch  
+  
+    def __iter__(self):  
+        total_samples = len(self.dataset)  
+        low_indices = self.dataset.curriculum_indices['low']  
+        medium_indices = self.dataset.curriculum_indices['medium']  
+        high_indices = self.dataset.curriculum_indices['high']  
+  
+        # Adjust ratios progressively based on the current epoch  
+        progress = self.epoch / self.num_epochs  
+        current_low_ratio = max(self.low_ratio * (1 - progress), 0)  
+        current_medium_ratio = max(self.medium_ratio * (1 - progress), 0.1)  
+        current_high_ratio = min(self.high_ratio * progress, 0.9)  
+  
+        # Calculate number of samples for each curriculum level  
+        num_low_samples = int(current_low_ratio * total_samples)  
+        num_medium_samples = int(current_medium_ratio * total_samples)  
+        num_high_samples = int(current_high_ratio * total_samples)  
+  
+        # Sample indices, ensuring that we handle cases where a curriculum level might be empty  
+        sampled_low = np.random.choice(low_indices, min(num_low_samples, len(low_indices)), replace=True).astype(int) if low_indices else np.array([], dtype=int)  
+        sampled_medium = np.random.choice(medium_indices, min(num_medium_samples, len(medium_indices)), replace=True).astype(int) if medium_indices else np.array([], dtype=int)  
+        sampled_high = np.random.choice(high_indices, min(num_high_samples, len(high_indices)), replace=True).astype(int) if high_indices else np.array([], dtype=int)  
+  
+        indices = np.concatenate([sampled_low, sampled_medium, sampled_high])  
+        np.random.shuffle(indices)  
+  
+        # Log distribution of curriculum levels in the batch  
+        print(f'Epoch {self.epoch}: Low: {len(sampled_low)}, Medium: {len(sampled_medium)}, High: {len(sampled_high)}')  
+  
+        return iter(indices)  
+  
+    def __len__(self):  
+        return len(self.dataset)  
+
+
+
+
+
 def cosine_similarity(a, b):  
     return F.cosine_similarity(a.unsqueeze(1), b.unsqueeze(0), dim=-1)  
-  
+
 def mean_reciprocal_rank(query_embeddings, positive_embeddings, negative_embeddings):  
     batch_size = query_embeddings.size(0)  
       
@@ -82,59 +143,61 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)  
     np.random.seed(seed)  
 
-def collate_fn(batch):  
+
+max_negative_pairs = 5  
+
+
+def collate_fn(batch, max_negative_pairs=5):  
     def stack_and_pad(batch_data, key):  
         sequences = [item[key] for item in batch_data if item[key] is not None]  
         if not sequences:  
             return None, None  
         padded_sequences = pad_sequence(sequences, batch_first=True)  
-        mask = torch.ones(padded_sequences.shape[:-1], dtype=torch.bool)  
+          
+        mask = torch.zeros(padded_sequences.shape[:-1], dtype=torch.bool)  
         for i, seq in enumerate(sequences):  
             mask[i, :seq.size(0)] = True  
         return padded_sequences, mask  
-
+  
     def process_data(data_list):  
         processed_data = {}  
         masks = {}  
-        for key in ['x_cat', 'x_bin', 'x_cont', 'labels']:  
+        for key in ['x_cat', 'x_bin', 'x_cont']:  
             stacked_data, mask = stack_and_pad(data_list, key)  
             if stacked_data is not None and mask is not None:  
                 processed_data[key] = stacked_data  
                 masks[key] = mask.unsqueeze(-1)  
         return processed_data, masks  
 
+    def create_text_mask(text_data):  
+        max_length = max(len(sequence) for sequence in text_data)  
+        padded_sequences = []  
+        for sequence in text_data:  
+            padded_sequence = sequence + ['Sentinel Value'] * (max_length - len(sequence))  
+            padded_sequences.append(padded_sequence)  
+        return padded_sequences   
+
     def transform_x_cat(x_cat, embedding_table_shapes):  
         x_cat_split = torch.split(x_cat, 1, dim=-1)  
         x_cat_split = [tensor.squeeze(-1) for tensor in x_cat_split]  
         x_cat_dict = {feature: tensor for feature, tensor in zip(embedding_table_shapes.keys(), x_cat_split)}  
         return x_cat_dict  
-
-    def create_text_mask(text_data):  
-        # Create masks based on the Sentinel Value and pad sequences to the same length  
-        max_length = max(len(sequence) for sequence in text_data)  
-        padded_sequences = []  
-        
-        for sequence in text_data:  
-            padded_sequence = sequence + ['Sentinel Value'] * (max_length - len(sequence))  
-            padded_sequences.append(padded_sequence)  
-        return padded_sequences
-
+  
     positive_pairs = [item['positive_pair'] for item in batch]  
     query_pairs = [item['query'] for item in batch]  
-    max_negative_pairs = 4  
+  
     negative_pairs = []  
     for item in batch:  
         negs = item['negative_pairs']  
         if len(negs) < max_negative_pairs:  
-            pad_value = negs[-1] if negs else {'x_cat': torch.zeros(1), 'x_bin': torch.zeros(1), 'x_cont': torch.zeros(1), 'labels': torch.zeros(1), 'x_text': "Sentinel Value"}  
+            pad_value = negs[-1] if negs else {'x_cat': torch.zeros(1), 'x_bin': torch.zeros(1), 'x_cont': torch.zeros(1), 'x_text': ["Sentinel Value"]}  
             negs.extend([pad_value] * (max_negative_pairs - len(negs)))  
         negative_pairs.extend(negs[:max_negative_pairs])  
-
+  
     positive_data, positive_masks = process_data(positive_pairs)  
     negative_data, negative_masks = process_data(negative_pairs)  
     query_data, query_masks = process_data(query_pairs)  
 
-    # Include x_text as is (strings) and create masks  
     query_data['x_text'] = create_text_mask([item['x_text'] for item in query_pairs])  
     positive_data['x_text'] = create_text_mask([item['x_text'] for item in positive_pairs])  
     negative_data['x_text'] = create_text_mask([item['x_text'] for item in negative_pairs])  
@@ -145,18 +208,23 @@ def collate_fn(batch):
         positive_data['x_cat'] = transform_x_cat(positive_data['x_cat'], embedding_table_shapes)  
     if 'x_cat' in negative_data:  
         negative_data['x_cat'] = transform_x_cat(negative_data['x_cat'], embedding_table_shapes)  
-
+  
     query_group_info = [item['group_info']['query'] for item in batch]  
     positive_group_info = [item['group_info']['positive_pair'] for item in batch]  
     negative_group_info = [item['group_info']['negative_pairs'] for item in batch]  
-
-    # Include sequence length information  
+  
     seq_lengths = {  
         'query': query_data['x_cont'].size(1) if 'x_cont' in query_data else 0,  
         'positive': positive_data['x_cont'].size(1) if 'x_cont' in positive_data else 0,  
         'negative': negative_data['x_cont'].size(1) if 'x_cont' in negative_data else 0  
     }  
-
+  
+    # Extract and pad labels  
+    query_labels = torch.stack([item['labels']['query_label'] for item in batch])  
+    positive_labels = torch.stack([item['labels']['positive_label'] for item in batch])  
+    negative_labels = [item['labels']['negative_labels'] for item in batch]  
+    negative_labels = pad_sequence(negative_labels, batch_first=True, padding_value=-1)  
+  
     return {  
         'query_data': query_data,  
         'query_masks': query_masks,  
@@ -167,10 +235,20 @@ def collate_fn(batch):
         'query_group_info': query_group_info,  
         'positive_group_info': positive_group_info,  
         'negative_group_info': negative_group_info,  
-        'seq_lengths': seq_lengths  
+        'seq_lengths': seq_lengths,  
+        'labels': {  
+            'query_labels': query_labels,  
+            'positive_labels': positive_labels,  
+            'negative_labels': negative_labels  
+        }  
     }  
 
-
+class LossWeights(nn.Module):  
+    def __init__(self):  
+        super(LossWeights, self).__init__()  
+        self.lambda_cpc = nn.Parameter(torch.tensor(1.0))  
+        self.lambda_classification = nn.Parameter(torch.tensor(1.0))  
+  
 
 
 
@@ -272,7 +350,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 encoded_texts = encode_text_data_separately(batch, st_model)  
 
                 # Manually extract data and insert into the model for query data  
-                query_pooled_output = model(  
+                query_pooled_output, query_logits = model(  
                     batch['query_data']['x_cat'],  
                     batch['query_data']['x_bin'],  
                     batch['query_data']['x_cont'],  
@@ -283,7 +361,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 )  
             
                 # Manually extract data and insert into the model for positive data  
-                positive_pooled_output = model(  
+                positive_pooled_output, positive_logits = model(  
                     batch['positive_data']['x_cat'],  
                     batch['positive_data']['x_bin'],  
                     batch['positive_data']['x_cont'],  
@@ -294,7 +372,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 )  
             
                 # Manually extract data and insert into the model for negative data  
-                negative_pooled_output = model(  
+                negative_pooled_output, negative_logits = model(  
                     batch['negative_data']['x_cat'],  
                     batch['negative_data']['x_bin'],  
                     batch['negative_data']['x_cont'],  
@@ -302,11 +380,28 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                     batch['negative_masks']['x_cat'],  
                     batch['negative_masks']['x_bin'],  
                     batch['negative_masks']['x_cont']  
-                ).view(batch_size, 4, 512)  
-            
+                )
+
+                negative_pooled_output = negative_pooled_output.view(batch_size, max_negative_pairs, config['d_model'])  
+
+                # classification loss  
+                query_labels = batch['labels']['query_labels']  
+                positive_labels = batch['labels']['positive_labels']  
+                negative_labels = batch['labels']['negative_labels']  
+
+                classification_loss = F.cross_entropy(query_logits, query_labels) + \
+                                    F.cross_entropy(positive_logits, positive_labels) + \
+                                    F.cross_entropy(negative_logits.view(-1, negative_logits.size(-1)), negative_labels.view(-1), ignore_index=-1)
+
                 # Loss function  
-                loss = loss_fn(query_pooled_output, positive_pooled_output, negative_pooled_output)  
-                losses.append(accelerator.gather(loss[None]))
+                cpc_loss = loss_fn(query_pooled_output, positive_pooled_output, negative_pooled_output)  
+
+                # Unwrap the loss weights model  
+                unwrapped_loss_weights = accelerator.unwrap_model(loss_weights)  
+            
+                # Combined loss with learnable parameters  
+                total_loss = unwrapped_loss_weights.lambda_cpc * cpc_loss + unwrapped_loss_weights.lambda_classification * classification_loss  
+                losses.append(accelerator.gather(total_loss[None]))
   
                 mrr = mean_reciprocal_rank(query_pooled_output, positive_pooled_output, negative_pooled_output)  
                 mrr_tensor = torch.tensor(mrr, device=accelerator.device)
@@ -321,21 +416,27 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
         accelerator.print(f"Average MRR: {avg_eval_mrr:.4f}")  
   
         return avg_eval_loss, avg_eval_mrr  
-  
+
+
+    # loss
+    loss_fn = InfoNCELoss(temperature=1.0)  
+    loss_weights = LossWeights()
+
     # optimizer / scheduler
     warmup_ratio = 0.1  
     num_training_steps = num_train_steps_per_epoch * config['num_epochs']  
     num_warmup_steps = int(num_training_steps * warmup_ratio)  
-  
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], weight_decay=config['weight_decay'])  
+
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(loss_weights.parameters()),
+        lr=config['lr'],
+        weight_decay=config['weight_decay']
+        )  
     scheduler = get_cosine_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps)  
 
-    # loss
-    loss_fn = InfoNCELoss()  
-  
     # prepare
-    model, optimizer, train_dataloader, eval_dataloader, loss_fn, scheduler, st_model = accelerator.prepare(  
-        model, optimizer, train_dataloader, eval_dataloader, loss_fn, scheduler, st_model)  
+    model, optimizer, train_dataloader, eval_dataloader, loss_fn, loss_weights, scheduler, st_model = accelerator.prepare(  
+        model, optimizer, train_dataloader, eval_dataloader, loss_fn, loss_weights, scheduler, st_model)  
   
     if accelerator.is_main_process:  
         print("Starting training ...")  
@@ -347,7 +448,14 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
         losses = []  
         interval_loss = 0.0  
         interval_mrr = 0.0  
-               
+        interval_query_low = 0.0
+        interval_query_medium = 0.0
+        interval_query_high = 0.0
+
+        # Update sampler for the current epoch
+        print(f"Updating Curriculum Sampler Epoch to: {epoch}")
+        curriculum_sampler.set_epoch(epoch)
+
         for step, batch in tqdm.tqdm(enumerate(train_dataloader), total=num_train_steps_per_epoch):
 
             optimizer.zero_grad()
@@ -359,7 +467,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
             encoded_texts = encode_text_data_separately(batch, st_model)  
 
             # Manually extract data and insert into the model for query data  
-            query_pooled_output = model(  
+            query_pooled_output, query_logits = model(  
                 batch['query_data']['x_cat'],  
                 batch['query_data']['x_bin'],  
                 batch['query_data']['x_cont'],  
@@ -370,7 +478,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
             )  
         
             # Manually extract data and insert into the model for positive data  
-            positive_pooled_output = model(  
+            positive_pooled_output, positive_logits = model(  
                 batch['positive_data']['x_cat'],  
                 batch['positive_data']['x_bin'],  
                 batch['positive_data']['x_cont'],  
@@ -381,7 +489,7 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
             )  
         
             # Manually extract data and insert into the model for negative data  
-            negative_pooled_output = model(  
+            negative_pooled_output, negative_logits = model(  
                 batch['negative_data']['x_cat'],  
                 batch['negative_data']['x_bin'],  
                 batch['negative_data']['x_cont'],  
@@ -389,33 +497,71 @@ def train_loop_per_worker(accelerator, config, train_dataloader, eval_dataloader
                 batch['negative_masks']['x_cat'],  
                 batch['negative_masks']['x_bin'],  
                 batch['negative_masks']['x_cont']  
-            ).view(batch_size, 4, 512)  
-                      
+            )
+
+            negative_pooled_output = negative_pooled_output.view(batch_size, max_negative_pairs, config['d_model'])  
+
+
+            # classification loss  
+            query_labels = batch['labels']['query_labels']  
+            positive_labels = batch['labels']['positive_labels']  
+            negative_labels = batch['labels']['negative_labels']  
+
+            classification_loss = F.cross_entropy(query_logits, query_labels) + \
+                                F.cross_entropy(positive_logits, positive_labels) + \
+                                F.cross_entropy(negative_logits.view(-1, negative_logits.size(-1)), negative_labels.view(-1), ignore_index=-1)
+
             # Loss function  
-            loss = loss_fn(query_pooled_output, positive_pooled_output, negative_pooled_output)  
-            losses.append(accelerator.gather(loss[None]))
+            cpc_loss = loss_fn(query_pooled_output, positive_pooled_output, negative_pooled_output)  
+
+            # Unwrap the loss weights model  
+            unwrapped_loss_weights = accelerator.unwrap_model(loss_weights)  
+        
+            # Combined loss with learnable parameters  
+            total_loss = unwrapped_loss_weights.lambda_cpc * cpc_loss + unwrapped_loss_weights.lambda_classification * classification_loss  
+            losses.append(accelerator.gather(total_loss[None]))
             
             # metric
             mrr = mean_reciprocal_rank(query_pooled_output, positive_pooled_output, negative_pooled_output)
 
             # backward
-            accelerator.backward(loss)  
+            accelerator.backward(total_loss)  
             accelerator.clip_grad_norm_(model.parameters(), 1.0)  
             optimizer.step()  
             scheduler.step()  
   
-            interval_loss += loss.item()  
+            interval_loss += total_loss.item()  
             interval_mrr += mrr  
-  
+
+            current_lr = scheduler.get_last_lr()[0]
+
+            # log curriculum counts for the current batch  
+            query_counts = count_curriculum(batch['query_group_info'])  
+
+            interval_query_low += query_counts['low']
+            interval_query_medium += query_counts['medium']
+            interval_query_high += query_counts['high']
+
             if (step + 1) % 20 == 0:  
                 if accelerator.is_main_process:  
                     mlflow.log_metric('interval_loss', interval_loss / 20)  
-                    mlflow.log_metric('interval_contrastive_acc', interval_mrr / 20)  
+                    mlflow.log_metric('interval_contrastive_acc', interval_mrr / 20) 
+
+
+                    mlflow.log_metric('query_low', interval_query_low / 20)  
+                    mlflow.log_metric('query_medium', interval_query_medium / 20)  
+                    mlflow.log_metric('query_high', interval_query_high / 20)    
+
                     accelerator.print(  
-                        f"Epoch {epoch}/{config['num_epochs']}, Batch {step+1}, Interval Loss: {interval_loss / 20:.4f}, Interval MRR: {interval_mrr / 20:.4f}")  
+                        f"Epoch {epoch}/{config['num_epochs']}, Batch {step+1}, Interval Loss: {interval_loss / 20:.4f}, Interval MRR: {interval_mrr / 20:.4f}, Current LR: {current_lr}")  
+
+                    # reset
                     interval_loss = 0.0  
                     interval_mrr = 0.0  
-
+                    interval_query_low = 0.0
+                    interval_query_medium = 0.0
+                    interval_query_high = 0.0
+                    
         all_losses = torch.cat(losses)  
         train_epoch_loss = all_losses.mean().item()  
         print(f"Epoch {epoch} / {config['num_epochs']}, Total Train Loss: {train_epoch_loss}")  
@@ -494,10 +640,10 @@ if __name__ == '__main__':
     sentence_transformer_model_snapshot = 'bf6b2e55e92f510a570ad4d7d2da2ec8cd22590c'
     sentence_transformer_model_path = shared_data_basepath + '/' + sentence_transformer_model_path_name + '/snapshots/' + sentence_transformer_model_snapshot
 
-    # prepare the persistent shared directory to store artifacts needed for the ray workers
+    # prepare the persistent shared directory to store artifacts needed for the workers
     os.makedirs(shared_data_basepath, exist_ok=True)
 
-    # One time download of the sentence transformer model to a shared persistent storage available to the ray workers
+    # one time download of the sentence transformer model to a shared persistent storage available to the workers
     snapshot_download(repo_id=sentence_transformer_model, revision=sentence_transformer_model_snapshot, cache_dir=shared_data_basepath)
 
     # add to config
@@ -505,37 +651,46 @@ if __name__ == '__main__':
 
     # build train and test data  
     train_set = GroupedDataFrameDataset(  
-        pairs_path=support_path + '/pairs.parquet',  
+        sequences_path=support_path + '/sequences.parquet',  
         data_df=train_df,  
         cat_cols=cat_cols,  
         binary_cols=binary_cols,  
         cont_cols=numerical_cols,  
-        label_cols=label_col,  
         text_col=text_col,  
         split='train',  
     )  
     print(f"Len Train Set: {len(train_set)} ")
 
     test_set = GroupedDataFrameDataset(  
-        pairs_path=support_path + '/pairs.parquet',  
+        sequences_path=support_path + '/sequences.parquet',  
         data_df=test_df,  
         cat_cols=cat_cols,  
         binary_cols=binary_cols,  
         cont_cols=numerical_cols,  
-        label_cols=label_col,  
         text_col=text_col,  
         split='test',  
     )
+
+    # init sampler
+    curriculum_sampler = CurriculumSampler(  
+        dataset=train_set,  
+        num_epochs=config['num_epochs'],  
+        epoch=1,  # Start from the first epoch  
+        low_ratio=0.7,  
+        medium_ratio=0.2,  
+        high_ratio=0.1  
+    )  
 
     # dataloaders
     print("Generating data loaders")  
     train_dataloader = DataLoader(  
         train_set,  
         batch_size=config['batch_size_per_device'],  
-        shuffle=True,  
+        shuffle=False,  
         collate_fn=collate_fn,  
         pin_memory=True,  
-        num_workers=5,  
+        num_workers=5,
+        sampler=curriculum_sampler,
         prefetch_factor=4,
         drop_last=True,
     )

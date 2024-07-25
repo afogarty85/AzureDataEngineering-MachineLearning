@@ -1,31 +1,25 @@
-# model.py
-
 import torch  
 import torch.nn as nn  
 import torch.nn.functional as F  
-from torch.nn import TransformerEncoder, TransformerEncoderLayer  
-import math
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len, dropout=0.1):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_parameter('pe', nn.Parameter(pe, requires_grad=False))
-
-    def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
+from torch.nn import TransformerEncoder, TransformerEncoderLayer, MultiheadAttention  
+import math  
   
 
+  
+
+class LearnablePositionalEncoding(nn.Module):  
+    def __init__(self, d_model, max_len, dropout=0.1):  
+        super(LearnablePositionalEncoding, self).__init__()  
+        self.dropout = nn.Dropout(p=dropout)  
+        self.pos_embedding = nn.Parameter(torch.zeros(1, max_len, d_model))  # Learnable positional encoding  
+  
+    def forward(self, x):  
+        x = x + self.pos_embedding[:, :x.size(1), :]  
+        return self.dropout(x)  
+
+
 class TabularTransformerEncoder(nn.Module):  
-    def __init__(self, embedding_table_shapes, num_cont_features, num_bin_features, num_text_features, d_model, nhead, num_layers, dim_feedforward, noise_std, dropout=0.1, max_len=17):  
+    def __init__(self, embedding_table_shapes, num_cont_features, num_bin_features, num_text_features, d_model, nhead, num_layers, dim_feedforward, noise_std, dropout=0.1, num_classes=3, max_len=23):  
         super(TabularTransformerEncoder, self).__init__()  
   
         self.d_model = d_model  
@@ -54,7 +48,7 @@ class TabularTransformerEncoder(nn.Module):
         self.combining_fc = nn.Linear(total_d_model, d_model)  
   
         # Positional Encoding  
-        self.pos_encoder = PositionalEncoding(d_model, max_len)  
+        self.pos_encoder = LearnablePositionalEncoding(d_model, max_len)   
   
         # Transformer encoder layer  
         encoder_layers = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)  
@@ -65,7 +59,10 @@ class TabularTransformerEncoder(nn.Module):
   
         # Noise  
         self.noise_std = noise_std  
-  
+
+        # Classification head  
+        self.classification_head = nn.Linear(d_model, num_classes)  
+
     def forward(self, x_cat, x_bin, x_cont, x_text, mask_cat, mask_bin, mask_cont):  
         # Debug: Check input tensors for NaNs  
         for name, tensor in {'x_bin': x_bin, 'x_cont': x_cont, 'x_text': x_text}.items():  
@@ -112,29 +109,36 @@ class TabularTransformerEncoder(nn.Module):
         x = self.combining_fc(x)  # [batch_size, seq_len, d_model]  
   
         # Add positional encodings  
-        x = self.pos_encoder(x.transpose(0, 1)).transpose(0, 1)  # [batch_size, seq_len, d_model]  
-  
+        x = self.pos_encoder(x)  # [batch_size, seq_len, d_model]  
+    
         # Combine masks to create a unified mask for the transformer encoder  
+        # mask_*: [batch_size, seq_len, 1]  
         combined_mask = mask_cont.squeeze(-1) & mask_bin.squeeze(-1) & mask_cat.squeeze(-1)  # [batch_size, seq_len]  
-  
+    
         # Apply transformer encoder  
         x = self.transformer_encoder(x.transpose(0, 1), src_key_padding_mask=~combined_mask).transpose(0, 1)  # [batch_size, seq_len, d_model]  
-  
-        # Pooling (mean pooling over valid tokens)  
-        combined_mask_sum = combined_mask.sum(dim=1, keepdim=True)  
-        if (combined_mask_sum == 0).any():  
-            print("Warning: Some sequences have no valid tokens to pool.")  
-            combined_mask_sum = combined_mask_sum + (combined_mask_sum == 0).float()  # Prevent division by zero  
-  
-        pooled_output = (x * combined_mask.unsqueeze(-1)).sum(dim=1) / combined_mask_sum  # [batch_size, d_model]  
-  
+    
+        # Get the last hidden state for each sequence  
+        # Find the index of the last valid token for each sequence  
+        last_valid_indices = combined_mask.sum(dim=1) - 1  # [batch_size]  
+        last_valid_indices = last_valid_indices.clamp(min=0)  # Ensure no negative indices  
+    
+        # Gather the last hidden state for each sequence  
+        pooled_output = x[torch.arange(batch_size), last_valid_indices]  # [batch_size, d_model]  
+    
         # Final transformation  
         pooled_output = self.pooling_fc(pooled_output)  # [batch_size, d_model]  
-  
+    
         # Debug: Check output tensors for NaNs  
         if torch.isnan(pooled_output).any():  
             print("NaNs detected in the output tensor.")  
+    
+        # Classification logits  
+        logits = self.classification_head(pooled_output)  # [batch_size, num_classes]  
   
-        return pooled_output  
+        return pooled_output, logits  
 
 
+
+      
+  
