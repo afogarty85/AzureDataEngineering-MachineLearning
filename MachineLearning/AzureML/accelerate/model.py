@@ -19,7 +19,7 @@ class LearnablePositionalEncoding(nn.Module):
 
 
 class TabularTransformerEncoder(nn.Module):  
-    def __init__(self, embedding_table_shapes, num_cont_features, num_bin_features, num_text_features, d_model, nhead, num_layers, dim_feedforward, noise_std, dropout=0.1, num_classes=3, max_len=23):  
+    def __init__(self, embedding_table_shapes, num_cont_features, num_bin_features, num_text_features, d_model, nhead, num_layers, dim_feedforward, noise_std, dropout=0.1, num_classes=3, max_len=251):  
         super(TabularTransformerEncoder, self).__init__()  
   
         self.d_model = d_model  

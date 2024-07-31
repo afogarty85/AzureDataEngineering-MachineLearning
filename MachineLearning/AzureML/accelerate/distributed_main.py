@@ -146,37 +146,43 @@ def set_seed(seed):
 
 max_negative_pairs = 5  
 
-
 def collate_fn(batch, max_negative_pairs=5):  
-    def stack_and_pad(batch_data, key):  
+    def stack_and_pad(batch_data, key, sentinel_value):  
         sequences = [item[key] for item in batch_data if item[key] is not None]  
         if not sequences:  
             return None, None  
         padded_sequences = pad_sequence(sequences, batch_first=True)  
+  
+        # Create mask where sentinel values are masked out  
+        mask = ~(padded_sequences == sentinel_value)  
           
-        mask = torch.zeros(padded_sequences.shape[:-1], dtype=torch.bool)  
-        for i, seq in enumerate(sequences):  
-            mask[i, :seq.size(0)] = True  
         return padded_sequences, mask  
   
     def process_data(data_list):  
         processed_data = {}  
         masks = {}  
         for key in ['x_cat', 'x_bin', 'x_cont']:  
-            stacked_data, mask = stack_and_pad(data_list, key)  
+            if key == 'x_bin':  
+                sentinel_value = -1  
+            elif key == 'x_cont':  
+                sentinel_value = -1.0  
+            else:  
+                sentinel_value = 0  # Sentinel value for categorical data  
+                  
+            stacked_data, mask = stack_and_pad(data_list, key, sentinel_value)  
             if stacked_data is not None and mask is not None:  
                 processed_data[key] = stacked_data  
                 masks[key] = mask.unsqueeze(-1)  
         return processed_data, masks  
-
+  
     def create_text_mask(text_data):  
         max_length = max(len(sequence) for sequence in text_data)  
         padded_sequences = []  
         for sequence in text_data:  
             padded_sequence = sequence + ['Sentinel Value'] * (max_length - len(sequence))  
             padded_sequences.append(padded_sequence)  
-        return padded_sequences   
-
+        return padded_sequences  
+  
     def transform_x_cat(x_cat, embedding_table_shapes):  
         x_cat_split = torch.split(x_cat, 1, dim=-1)  
         x_cat_split = [tensor.squeeze(-1) for tensor in x_cat_split]  
@@ -197,11 +203,10 @@ def collate_fn(batch, max_negative_pairs=5):
     positive_data, positive_masks = process_data(positive_pairs)  
     negative_data, negative_masks = process_data(negative_pairs)  
     query_data, query_masks = process_data(query_pairs)  
-
     query_data['x_text'] = create_text_mask([item['x_text'] for item in query_pairs])  
     positive_data['x_text'] = create_text_mask([item['x_text'] for item in positive_pairs])  
     negative_data['x_text'] = create_text_mask([item['x_text'] for item in negative_pairs])  
-
+  
     if 'x_cat' in query_data:  
         query_data['x_cat'] = transform_x_cat(query_data['x_cat'], embedding_table_shapes)  
     if 'x_cat' in positive_data:  
@@ -242,6 +247,7 @@ def collate_fn(batch, max_negative_pairs=5):
             'negative_labels': negative_labels  
         }  
     }  
+
 
 class LossWeights(nn.Module):  
     def __init__(self):  
